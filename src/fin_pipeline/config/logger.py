@@ -1,69 +1,61 @@
-# pip install loguru
 import os
 import sys
+import json
+from datetime import datetime
 from loguru import logger
 
-# Configuration constants sourced from environment configs
 LOG_LEVEL = os.getenv("FIN_PIPELINE_LOG_LEVEL", "INFO").upper()
 LOG_DIR = os.getenv("FIN_PIPELINE_LOG_DIR", "logs")
 
 def serialize_json_log(record):
-    """
-    Custom serializer to output uniform JSON lines for automated data metric ingestors.
-    """
-    subset = {
-        "timestamp": record["date"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "level": record["level"].name,
-        "message": record["message"],
-        "module": record["module"],
-        "function": record["function"],
-        "line": record["line"],
-        "exception": None
+    """Formats Python logs into unified JSON configurations for metric parsers."""
+    timestamp = record.get("time") or record.get("date") or datetime.utcnow()
+    if hasattr(timestamp, "strftime"):
+        timestamp_value = timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        timestamp_value = str(timestamp)
+
+    level = record.get("level")
+    level_name = getattr(level, "name", str(level))
+
+    exception = record.get("exception")
+    if exception is not None:
+        exc_type = type(exception).__name__
+        exc_value = str(exception)
+        exception_payload = {"type": exc_type, "value": exc_value}
+    else:
+        exception_payload = None
+
+    return {
+        "timestamp": timestamp_value,
+        "level": level_name,
+        "message": record.get("message"),
+        "module": record.get("module"),
+        "function": record.get("function"),
+        "line": record.get("line"),
+        "exception": exception_payload,
     }
-    if record["exception"]:
-        subset["exception"] = {
-            "type": str(record["exception"].type),
-            "value": str(record["exception"].value),
-        }
-    return subset
 
 def _json_formatter(record):
-    """Appends structural system contexts into log outputs."""
-    import json
     record["extra"]["serialized"] = json.dumps(serialize_json_log(record))
     return "{extra[serialized]}\n"
 
 def configure_pipeline_logger():
-    """
-    Initializes systemic logging infrastructure. Must be triggered at package boot up.
-    """
-    # 1. Purge default unconfigured logging handlers
+    """Builds two separate stream sinks: colorized terminal output and a daily rotating file."""
     logger.remove()
-
-    # 2. Add high-visibility colorized console output handler
-    console_format = (
-        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-        "<level>{level: <8}</level> | "
-        "<cyan>{module}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
-        "<level>{message}</level>"
-    )
+    
+    console_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{module}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>"
     logger.add(sys.stderr, level=LOG_LEVEL, format=console_format, colorize=True)
-
-    # 3. Add production-grade structured JSON log rotators
+    
     os.makedirs(LOG_DIR, exist_ok=True)
-    json_log_path = os.path.join(LOG_DIR, "pipeline_metrics.json")
-    
     logger.add(
-        json_log_path,
-        level=LOG_LEVEL,
-        format=_json_formatter,
-        rotation="10 MB",       # Rotate to a new file when the log hits 10 megabytes
-        retention="30 days",    # Auto-cleanup files older than 30 days
-        compression="zip",      # Compress old files to save server space
-        enqueue=True            # Multi-threading and async safety queue barrier enabled
+        os.path.join(LOG_DIR, "pipeline_metrics.json"), 
+        level=LOG_LEVEL, 
+        format=_json_formatter, 
+        rotation="10 MB", 
+        retention="30 days", 
+        compression="zip", 
+        enqueue=True
     )
-    
-    logger.debug(f"Structured logging system initialized. Base path: {json_log_path}")
 
-# Export configured reference handle instance globally
 pipeline_logger = logger

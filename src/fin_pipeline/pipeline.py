@@ -51,6 +51,7 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
     try:
         log.debug(f"💾 Opening connection channel block to SurrealDB for record update: {record_id}")
         async with SurrealConnection() as db:
+            await db.delete_record(record_id)
             await db.upsert(record_id, validated_record)
             
             if validated_record["documentStatus"] == "PROCESSED":

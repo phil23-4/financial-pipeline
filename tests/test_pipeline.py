@@ -1,5 +1,10 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import AsyncMock, patch
+from fin_pipeline.config.logger import serialize_json_log
+from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.pipeline import run_ingestion_pipeline
 
 @pytest.mark.asyncio
@@ -50,3 +55,81 @@ async def test_successful_pipeline_ingestion(
     
     # Verify graph edge constructor call was dispatched safely
     mock_graph_rel.assert_called_once()
+
+
+def test_serialize_json_log_uses_loguru_time_field():
+    """Ensure JSON log serialization is compatible with Loguru's current record layout."""
+    record = {
+        "time": datetime(2026, 9, 1, 15, 16, 50, tzinfo=timezone.utc),
+        "level": SimpleNamespace(name="INFO"),
+        "message": "hello world",
+        "module": "test_module",
+        "function": "demo_function",
+        "line": 42,
+        "exception": None,
+    }
+
+    payload = serialize_json_log(record)
+
+    assert payload["timestamp"] == "2026-09-01T15:16:50Z"
+    assert payload["level"] == "INFO"
+    assert payload["message"] == "hello world"
+
+
+@pytest.mark.asyncio
+@patch("fin_pipeline.db.connection._HttpSurrealConnection")
+async def test_surreal_connection_uses_helper_adapter(mock_http_conn):
+    """The app should use the repository's helper-backed connection adapter."""
+    mock_db = AsyncMock()
+    mock_http_conn.return_value = mock_db
+
+    async with SurrealConnection() as db:
+        assert db is mock_db
+
+    mock_http_conn.assert_called_once()
+    mock_db.connect.assert_awaited_once()
+    mock_db.signin.assert_awaited_once_with({
+        "user": "root",
+        "pass": "secret",
+        "namespace": "finance",
+        "database": "analytics",
+    })
+    mock_db.use.assert_awaited_once_with(namespace="finance", database="analytics")
+    mock_db.close.assert_awaited_once()
+
+
+def test_http_upsert_uses_upsert_statement():
+    """Ensure the adapter uses raw SurrealQL UPSERT writes instead of a no-op UPDATE."""
+    with patch("fin_pipeline.db.connection.surreal_query") as mock_surreal_query:
+        mock_surreal_query.return_value = {"result": [{"status": "OK"}]}
+
+        async def run():
+            adapter = __import__("fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"])._HttpSurrealConnection()
+            await adapter.upsert(
+                "exchange_filing:test",
+                {"filingId": "test", "updatedAt": "2026-09-01T00:00:00Z", "sheetName": None, "documentTables": [{"sheetName": None, "headers": ["A"]}]}
+            )
+
+        import asyncio
+        asyncio.run(run())
+
+    mock_surreal_query.assert_called_once()
+    sql = mock_surreal_query.call_args[0][0]
+    assert sql.startswith("UPSERT exchange_filing:test CONTENT")
+    assert "updatedAt: d'2026-09-01T00:00:00Z'" in sql
+    assert "sheetName" not in sql
+
+
+def test_http_delete_record_removes_stale_partial_data():
+    """Ensure stale partial records are cleaned up before a fresh ingest."""
+    with patch("fin_pipeline.db.connection.surreal_query") as mock_surreal_query:
+        mock_surreal_query.return_value = {"result": [{"status": "OK"}]}
+
+        async def run():
+            adapter = __import__("fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"])._HttpSurrealConnection()
+            await adapter.delete_record("exchange_filing:test")
+
+        import asyncio
+        asyncio.run(run())
+
+    mock_surreal_query.assert_called_once_with("DELETE exchange_filing:test;", timeout=60)
