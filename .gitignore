@@ -1,0 +1,39 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.*
+
+# Editor / OS files
+.vscode/
+.DS_Store
+
+# Test / coverage outputs
+.pytest_cache/
+.coverage
+htmlcov/
+.coverage.*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs
+logs/
+*.log
+
+# Local database files
+*.sqlite3
+*.db
+
+# Jupyter
+.ipynb_checkpoints/
