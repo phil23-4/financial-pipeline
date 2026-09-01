@@ -60,6 +60,8 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
                     db=db,
                     filing_id=record_id,
                     owning_ticker=validated_record["companyTicker"],
+                    owning_company_name=validated_record.get("stockName"),
+                    owning_exchange=validated_record.get("exchange"),
                     referenced_tickers=validated_record.get("referencedTickers", [])
                 )
         
