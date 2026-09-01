@@ -4,13 +4,15 @@ A production-grade, highly scalable modular Python package designed to extract m
 
 ## 🌟 Key Features
 
+- **Dual Input Format Support**: Process both **PDF** (digital and scanned) and **HTML** document formats seamlessly
 - **Dual Extraction Strategy**: High-speed digital-native text extraction with automatic `pytesseract` OCR fallbacks for scanned images or faxed financial reports.
 - **Table-to-Markdown Engine**: Parses grid geometry and structural visual layouts into standardized Markdown strings while tracking page indexes and row weights.
+- **SEC Edgar Directory Crawling**: Automatically discover and process HTML filings from local SEC Edgar directory structures with metadata extraction for company name, filing date, filing type, exchange, and document format.
 - **Auto-Company Seeding**: Automatically creates company records when first referenced by filing metadata—no manual database bootstrapping required.
 - **SurrealDB Graph Relate Automation**: Automatically calculates cryptographic file signatures and creates type-safe graph edges (`has_filing`, `references_filing`) with seamless company linking.
 - **Stale Record Cleanup**: Intelligently removes incomplete partial records from earlier failed writes before each fresh ingestion to prevent data inconsistency.
 - **Enterprise-Grade Log Management**: Asynchronous structured logs powered by `loguru`, delivering terminal views alongside single-line JSON log tracking outputs ready for ELK/Grafana Loki ingestion.
-- **Concurrently Scheduled Pipeline**: Asynchronous IO engine with customizable execution semaphores to regulate system workloads during intense OCR operations.
+- **Controlled Processing**: Local PDF directory scans can run concurrently; SEC Edgar HTML filings are processed sequentially so each filing and its graph relations are committed before the next begins.
 
 ---
 
@@ -24,8 +26,8 @@ financial-pipeline/
 ├── src/
 │   └── fin_pipeline/        # Main source workspace module
 │       ├── __init__.py      # Package export points & logging init
-│       ├── cli.py           # Command Line Interface (Click layer)
-│       ├── crawler.py       # Recursive directory scanning file explorer
+│       ├── cli.py           # Command Line Interface (Click layer) - PDF, HTML, and SEC Edgar support
+│       ├── crawler.py       # Directory scanning (PDF, HTML, SEC Edgar structure parser)
 │       ├── pipeline.py      # Main ingestion orchestrator (parse → validate → DB upsert → graph relations)
 │       ├── config/
 │       │   ├── settings.py  # Environment mappings & DB credentials
@@ -39,7 +41,8 @@ financial-pipeline/
 │       └── utils/
 │           ├── crypto.py    # Core file SHA256 checksum routines
 │           ├── ocr_engine.py# Pytesseract image converter fallback
-│           └── pdf_parser.py# Layout bounding box scanner and markdown table builder
+│           ├── pdf_parser.py# PDF layout bounding box scanner and markdown table builder
+│           └── html_parser.py# HTML text extraction and table parser (BeautifulSoup)
 └── tests/                   # Pytest automation suite with async database setup & validation
 ```
 
@@ -79,9 +82,9 @@ Configure your local system ledger parameters by exporting variables or passing 
 
 | Variable Name            | Description                                     | Default Target Fallback   |
 | :----------------------- | :---------------------------------------------- | :------------------------ |
-| `SURREAL_ENDPOINT`       | WebSockets database listener endpoint           | `ws://localhost:8000/rpc` |
+| `SURREAL_ENDPOINT`       | HTTP SurrealDB listener endpoint                | `http://127.0.0.1:8000`   |
 | `SURREAL_USER`           | Security login user root handle                 | `root`                    |
-| `SURREAL_PASS`           | Connection security validation password         | `root`                    |
+| `SURREAL_PASS`           | Connection security validation password         | `secret`                  |
 | `SURREAL_NAMESPACE`      | Database validation cluster cluster namespace   | `finance`                 |
 | `SURREAL_DATABASE`       | Target working database storage instance        | `analytics`               |
 | `COMPANY_TABLE`          | Parent nodes table containing company entries   | `company`                 |
@@ -104,7 +107,44 @@ Recursively scan any local folder directory for text-based or scanned PDFs. The 
 fin-pipeline scan /absolute/path/to/financial/reports --source LOCAL --concurrency 4
 ```
 
-#### Scenario B: Ingesting an Explicit SEC Regulatory Filing
+#### Scenario B: Processing SEC Edgar HTML Filings from Directory Structure
+
+Discover and process SEC Edgar HTML filings stored in a local directory hierarchy. The pipeline extracts ticker, filing type, and accession number from the directory structure, then reads company name, fiscal period end date, and exchange from the HTML document's Inline XBRL and filing text.
+
+**Expected directory structure:**
+```
+sec_filings/
+└── sec-edgar-filings/
+    ├── AAPL/
+    │   ├── 10-K/
+    │   │   ├── 0000320193-25-000079/
+    │   │   │   └── primary-document.html
+    │   │   └── 0000320193-24-000080/
+    │   │       └── primary-document.html
+    │   └── 20-F/
+    │       └── 0000320193-23-000081/
+    │           └── primary-document.html
+    └── MSFT/
+        └── 10-K/
+            └── 0000789019-25-000091/
+                └── primary-document.html
+```
+
+```bash
+# Process all SEC Edgar HTML filings sequentially
+fin-pipeline sec-edgar-html /path/to/sec_filings
+
+# --concurrency is retained for CLI compatibility but is ignored for SEC HTML processing
+fin-pipeline sec-edgar-html /path/to/sec_filings --concurrency 1
+
+# Single file processing also works with automatic format detection
+fin-pipeline file ./downloads/filing.html \
+  --filing-id "sec_manual_filing" \
+  --ticker "AAPL" \
+  --type "10-K"
+```
+
+#### Scenario C: Ingesting an Explicit SEC Regulatory Filing
 
 Register an individual document while applying explicit regulatory parameter attributes to ensure clean cross-references inside your database layer:
 
@@ -138,8 +178,11 @@ async def main():
     }
     await run_ingestion_pipeline(custom_metadata, "./tsmc_annual.pdf", source="SEC")
 
-    # 2. Alternatively, ingest an entire shared network storage path concurrently
+   # 2. Local PDF directory ingestion can run concurrently
     await process_entire_directory("/shared/network/pdf_drop", source_type="LOCAL", concurrency_limit=2)
+
+   # SEC HTML directory ingestion is sequential and waits for each graph commit
+   # await process_sec_edgar_html_directory("/shared/sec_filings")
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -152,11 +195,11 @@ if __name__ == "__main__":
 The ingestion pipeline follows a multi-stage transformation and persistence workflow:
 
 ```
-PDF Input
+PDF or HTML Input
    ↓
 [1] Text & Layout Extraction
-   ├─ Digital-native parsing (first pass)
-   └─ OCR fallback for scanned images
+   ├─ PDF digital-native parsing with OCR fallback
+   └─ HTML text/table parsing and Inline XBRL metadata extraction
    ↓
 [2] Pydantic Schema Validation
    └─ Type coercion & field validation
@@ -169,12 +212,14 @@ PDF Input
    ↓
 [5] Auto-Company Seeding & Graph Relations
    ├─ Create company record if ticker not found
-   ├─ RELATE company→filing edge (has_filing)
-   └─ RELATE filing→referenced_companies edges (references_filing)
+   ├─ Replace the exact existing edge, then create has_filing
+   └─ Replace/create references_filing edges
    ↓
 [6] Success Log
-   └─ Complete structured JSON log entry
+   └─ Success is reported only after all database and graph operations succeed
 ```
+
+SEC HTML directory processing waits for each filing to finish all six stages before starting the next. Any parser, validation, database, or graph error stops the batch and identifies the failed accession.
 
 ### Auto-Company Creation Behavior
 
@@ -182,7 +227,7 @@ When a filing is ingested, the pipeline automatically discovers and seeds compan
 
 - **Owning Company**: Created from `companyTicker`, `stockName` (or ticker as fallback), and `exchange` metadata
 - **Referenced Companies**: Auto-created for each ticker in `referencedTickers` array
-- **Idempotent**: Duplicate tickers are checked before creation—no duplicates inserted
+- **Idempotent**: Duplicate tickers are checked before creation, and exact graph edges are replaced before recreation—no duplicate companies or relations are inserted
 
 Example:
 ```python
@@ -201,13 +246,13 @@ custom_metadata = {
 
 ### Stale Record Cleanup
 
-Before writing a fresh filing record, the pipeline removes any pre-existing record with the same `exchange_filing` ID that may be incomplete or stale from earlier failed writes. This prevents partial data from persisting and causing downstream inconsistencies.
+Before writing a fresh filing record, the pipeline removes any pre-existing record with the same `exchange_filing` ID that may be incomplete or stale from earlier failed writes. This prevents partial data from persisting and causing downstream inconsistencies. SEC accession IDs, including hyphens, are preserved as unique record keys, so different years remain separate records.
 
 ---
 
 ## 📊 Aligning with the SurrealDB Schema
 
-The pipeline maps out extractions to strictly comply with the following `SCHEMAFULL` database schema design rules. If the record includes text layer errors or type validation mismatches, the transaction is rejected to guarantee data cleanliness.
+The pipeline maps extractions to the following `SCHEMAFULL` database schema design rules. Pydantic validation runs before persistence, and embedded SurrealDB query errors are propagated. A filing is successful only when its record and graph relations are stored; sequential SEC processing stops at the first failure.
 
 ```surrealql
 -- Company Node Table (auto-populated during ingestion)
@@ -241,12 +286,12 @@ DEFINE FIELD documentTables[*].pageNumber  ON TABLE exchange_filing TYPE option<
 
 -- Graph Relations: Company → Filing Association
 DEFINE TABLE has_filing SCHEMAFULL TYPE RELATION IN company OUT exchange_filing;
-DEFINE FIELD createdAt ON TABLE has_filing TYPE datetime;
+DEFINE FIELD createdAt ON TABLE has_filing TYPE option<datetime>;
 DEFINE INDEX idx_hf_unique ON TABLE has_filing COLUMNS in, out UNIQUE;
 
 -- Graph Relations: Filing → Referenced Company Cross-References
 DEFINE TABLE references_filing SCHEMAFULL TYPE RELATION IN exchange_filing OUT company;
-DEFINE FIELD createdAt ON TABLE references_filing TYPE datetime;
+DEFINE FIELD createdAt ON TABLE references_filing TYPE option<datetime>;
 DEFINE FIELD source    ON TABLE references_filing TYPE option<string>;
 DEFINE INDEX idx_rf_unique ON TABLE references_filing COLUMNS in, out UNIQUE;
 ```
@@ -266,9 +311,17 @@ pytest -v
 
 ## 🔧 Recent Improvements & Fixes
 
-### Session Stabilization (Latest Release)
+### Session Stabilization + HTML Filing Support (Latest Release)
 
-The pipeline has been hardened with the following production-ready enhancements:
+The pipeline has been hardened with production-ready enhancements and now supports both PDF and HTML financial document formats:
+
+**New File Format Support**
+- ✅ **HTML Parser** — BeautifulSoup-based extraction of text and tables from HTML documents
+- ✅ **Automatic Format Detection** — Pipeline intelligently detects and routes PDF/HTML files to correct parsers
+- ✅ **SEC Edgar Directory Crawler** — Scans local SEC Edgar filing structures and extracts ticker, filing type, and full hyphenated accession IDs
+- ✅ **HTML Metadata Extraction** — Reads company name, fiscal period end date, filing type, and exchange from SEC HTML/XBRL content; stores `HTML` as the document type
+- ✅ **Multi-Year Support** — Processes every accession directory, retaining each year's filing as a separate database record
+- ✅ **Sequential SEC Processing** — Completes record persistence and graph relations before starting the next document; stops on failure
 
 **Database Adapter & Persistence**
 - ✅ **HTTP-based SurrealDB connection** using urllib instead of async WebSocket client for maximum stability
@@ -276,11 +329,14 @@ The pipeline has been hardened with the following production-ready enhancements:
 - ✅ **Datetime literal handling** — SurrealDB datetime fields receive proper `d'ISO8601Z'` format literals
 - ✅ **Stale record cleanup** — `delete_record()` removes incomplete legacy records before fresh writes
 - ✅ **None-value pruning** — Optional fields with null values stripped before DB commit to maintain schema compliance
+- ✅ **Accession-safe record IDs** — Hyphenated accession numbers are escaped or parameterized so they cannot be truncated or interpreted as subtraction
+- ✅ **Strict query error detection** — Errors returned inside SurrealDB result arrays now fail the filing instead of producing false success logs
 
 **Graph Relations & Company Seeding**
 - ✅ **Auto-company creation** — Companies automatically seeded during ingestion; no manual DB bootstrapping
 - ✅ **Idempotent company checks** — Duplicate ticker creation prevented via unique constraint
 - ✅ **Direct SQL RELATE statements** — Graph edges created with proper SurrealQL literal syntax
+- ✅ **Idempotent graph edges** — Existing exact `has_filing` and `references_filing` edges are removed before recreation
 - ✅ **Referenced company linking** — `references_filing` edges connect filings to all mentioned company tickers
 
 **Logging & Observability**
@@ -292,6 +348,7 @@ The pipeline has been hardened with the following production-ready enhancements:
 - ✅ **SCHEMAFULL enforcement** — Strict type checking at DB write time; rejected records include full error context
 - ✅ **Pydantic model validation** — Python-side type coercion and field validation before DB commit
 - ✅ **Field migration support** — Deprecated `documentContent` (blob) field automatically removed on schema init
+- ✅ **Relation schema migration** — Existing graph relation timestamps are migrated to optional fields for compatible bare `RELATE` creation
 
 ### Test Coverage
 
@@ -300,5 +357,7 @@ All fixes validated with regression test suite:
 - Logger serialization and exception handling
 - Full UPSERT round-trip with datetime fields
 - Pydantic model validation and error reporting
+- Strict embedded database error detection and sequential batch failure handling
+- SEC HTML metadata extraction and multi-year accession preservation
 
 ---

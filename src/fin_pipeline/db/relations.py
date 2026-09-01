@@ -4,6 +4,11 @@ from fin_pipeline.db.db import surreal_query
 from fin_pipeline.db.connection import _surrealql_literal
 from loguru import logger as log
 
+
+def _quote_record_id(record_id: str) -> str:
+    table, _, key = record_id.partition(":")
+    return f"{table}:⟨{key}⟩" if key else record_id
+
 async def ensure_company_exists(db: Surreal, ticker: str, company_name: str = None, exchange: str = None):
     """Auto-create a company record if it doesn't exist."""
     # Check if company exists
@@ -31,6 +36,9 @@ async def ensure_company_exists(db: Surreal, ticker: str, company_name: str = No
     if isinstance(result, dict) and result.get("error"):
         log.warning(f"Could not auto-create company {ticker}: {result['error'][:200]}")
         return None
+    if isinstance(result, list) and any(item.get("status") == "ERR" for item in result if isinstance(item, dict)):
+        log.warning(f"Could not auto-create company {ticker}: {result}")
+        return None
     
     log.debug(f"Auto-created company record: {company_id}")
     return company_id
@@ -46,7 +54,9 @@ async def establish_graph_relations(db: Surreal, filing_id: str, owning_ticker: 
     # Ensure owning company exists
     owner_id = await ensure_company_exists(db, owning_ticker, owning_company_name, owning_exchange)
     if owner_id:
-        sql = f"RELATE {owner_id}->has_filing->{filing_id} SET createdAt = time::now();"
+        owner_ref = _quote_record_id(owner_id)
+        filing_ref = _quote_record_id(filing_id)
+        sql = f"DELETE has_filing WHERE in = {owner_ref} AND out = {filing_ref}; RELATE {owner_ref}->has_filing->{filing_ref};"
         await db.query(sql)
 
     # Ensure referenced companies exist
@@ -54,5 +64,7 @@ async def establish_graph_relations(db: Surreal, filing_id: str, owning_ticker: 
         for ref_ticker in referenced_tickers:
             ref_id = await ensure_company_exists(db, ref_ticker)
             if ref_id:
-                sql = f"RELATE {filing_id}->references_filing->{ref_id} SET createdAt = time::now(), source = 'extraction_pipeline';"
+                filing_ref = _quote_record_id(filing_id)
+                ref_ref = _quote_record_id(ref_id)
+                sql = f"DELETE references_filing WHERE in = {filing_ref} AND out = {ref_ref}; RELATE {filing_ref}->references_filing->{ref_ref};"
                 await db.query(sql)

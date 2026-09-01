@@ -3,7 +3,28 @@ import re
 from datetime import datetime, timezone
 
 from fin_pipeline.config.settings import DB_ENDPOINT, DB_AUTH
-from fin_pipeline.db.db import initialize_schema, surreal_query
+from fin_pipeline.db.db import initialize_schema, surreal_query, surreal_rpc
+
+
+# SurrealDB's /sql endpoint has a smaller request limit than /rpc.
+_SQL_UPSERT_LIMIT_BYTES = 900_000
+
+
+def _raise_for_query_error(response):
+    """Raise for both HTTP errors and SurrealDB errors inside result arrays."""
+    if isinstance(response, dict) and response.get("error"):
+        raise RuntimeError(response["error"])
+    if isinstance(response, list):
+        for result in response:
+            if isinstance(result, dict) and result.get("status") == "ERR":
+                raise RuntimeError(str(result.get("result", "Unknown query error")))
+    return response
+
+
+def _quote_record_id(record_id: str) -> str:
+    """Quote record IDs so hyphenated accession numbers are not parsed as subtraction."""
+    table, _, key = record_id.partition(":")
+    return f"{table}:⟨{key}⟩" if key else record_id
 
 
 def _prune_none_values(value):
@@ -63,27 +84,33 @@ class _HttpSurrealConnection:
 
     async def delete_record(self, record_id: str):
         """Delete a stale record so a fresh write does not reuse partial data."""
-        response = surreal_query(f"DELETE {record_id};", timeout=60)
-        if isinstance(response, dict) and response.get("error"):
-            raise RuntimeError(response["error"])
-        return response
+        response = surreal_query(f"DELETE {_quote_record_id(record_id)};", timeout=60)
+        return _raise_for_query_error(response)
 
     async def upsert(self, record_id: str, payload: dict):
         payload = _prune_none_values(dict(payload))
         if "updatedAt" not in payload or payload["updatedAt"] is None:
             payload["updatedAt"] = datetime.now(timezone.utc)
 
-        query = f"UPSERT {record_id} CONTENT {_surrealql_literal(payload)};"
-        response = surreal_query(query, timeout=120)
-        if isinstance(response, dict) and response.get("error"):
-            raise RuntimeError(response["error"])
-        return response
+        quoted_record_id = _quote_record_id(record_id)
+        query = f"UPSERT {quoted_record_id} CONTENT {_surrealql_literal(payload)};"
+        if len(query.encode("utf-8")) > _SQL_UPSERT_LIMIT_BYTES:
+            table, _, key = record_id.partition(":")
+            response = surreal_rpc(
+                "query",
+                [
+                    "UPSERT type::record($table, $key) CONTENT $payload;",
+                    {"table": table, "key": key, "payload": payload},
+                ],
+                timeout=240,
+            )
+        else:
+            response = surreal_query(query, timeout=120)
+        return _raise_for_query_error(response)
 
     async def query(self, sql: str, params: dict | None = None):
         response = surreal_query(sql, timeout=120)
-        if isinstance(response, dict) and response.get("error"):
-            raise RuntimeError(response["error"])
-        return response
+        return _raise_for_query_error(response)
 
     async def close(self):
         return None

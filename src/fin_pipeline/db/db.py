@@ -224,12 +224,12 @@ DEFINE INDEX IF NOT EXISTS idx_ef_category  ON TABLE exchange_filing COLUMNS fil
         base += f"""
 -- Edge table: company -> filing (graph relation)
 DEFINE TABLE IF NOT EXISTS has_filing SCHEMAFULL TYPE RELATION IN {COMPANY_TABLE} OUT exchange_filing;
-DEFINE FIELD IF NOT EXISTS createdAt ON TABLE has_filing TYPE datetime;
+DEFINE FIELD IF NOT EXISTS createdAt ON TABLE has_filing TYPE option<datetime>;
 DEFINE INDEX IF NOT EXISTS idx_hf_unique ON TABLE has_filing COLUMNS in, out UNIQUE;
 
 -- Edge table: filing -> referenced company (graph relation)
 DEFINE TABLE IF NOT EXISTS references_filing SCHEMAFULL TYPE RELATION IN exchange_filing OUT {COMPANY_TABLE};
-DEFINE FIELD IF NOT EXISTS createdAt ON TABLE references_filing TYPE datetime;
+DEFINE FIELD IF NOT EXISTS createdAt ON TABLE references_filing TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS source    ON TABLE references_filing TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_rf_unique ON TABLE references_filing COLUMNS in, out UNIQUE;
 """
@@ -265,4 +265,17 @@ def initialize_schema() -> bool:
         )
     else:
         log("  Migration: documentContent field removed (no longer storing blobs)")
+
+    if COMPANY_TABLE:
+        relation_migration = surreal_query(
+            "REMOVE FIELD IF EXISTS createdAt ON TABLE has_filing;"
+            " DEFINE FIELD createdAt ON TABLE has_filing TYPE option<datetime>;"
+            " REMOVE FIELD IF EXISTS createdAt ON TABLE references_filing;"
+            " DEFINE FIELD createdAt ON TABLE references_filing TYPE option<datetime>;",
+            timeout=30,
+        )
+        if isinstance(relation_migration, dict) and relation_migration.get("error"):
+            log(f"  Relation metadata migration warning: {relation_migration['error'][:200]}")
+        else:
+            log("  Migration: graph relation timestamps made optional for bare RELATE compatibility")
     return True

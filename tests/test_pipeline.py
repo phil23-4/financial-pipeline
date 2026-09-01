@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from fin_pipeline.config.logger import serialize_json_log
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.pipeline import run_ingestion_pipeline
+from fin_pipeline.utils.html_parser import extract_filing_metadata
 
 @pytest.mark.asyncio
 @patch("fin_pipeline.pipeline.parse_pdf_layout")
@@ -76,6 +77,34 @@ def test_serialize_json_log_uses_loguru_time_field():
     assert payload["message"] == "hello world"
 
 
+def test_extract_filing_metadata_from_inline_xbrl():
+    html = """
+    <ix:nonNumeric name="dei:EntityRegistrantName">Bank of America Corporation</ix:nonNumeric>
+    <ix:nonNumeric name="dei:DocumentPeriodEndDate">December 31 , 2021</ix:nonNumeric>
+    <ix:nonNumeric name="dei:DocumentType">10-K</ix:nonNumeric>
+    """
+
+    assert extract_filing_metadata(html) == {
+        "stockName": "Bank of America Corporation",
+        "filingDate": "2021-12-31",
+        "filingType": "10-K",
+        "exchange": None,
+    }
+
+
+def test_extract_filing_metadata_finds_exchange_in_document_text():
+    html = "<p>Name of each exchange on which registered: New York Stock Exchange</p>"
+
+    assert extract_filing_metadata(html)["exchange"] == "NYSE"
+
+
+@pytest.mark.parametrize("date_text", ["December 31, 2019", "December 31 , 2019", "December\u00a031,\u00a02019"])
+def test_extract_filing_metadata_accepts_sec_date_spacing(date_text):
+    html = f'<ix:nonNumeric name="dei:DocumentPeriodEndDate">{date_text}</ix:nonNumeric>'
+
+    assert extract_filing_metadata(html)["filingDate"] == "2019-12-31"
+
+
 @pytest.mark.asyncio
 @patch("fin_pipeline.db.connection._HttpSurrealConnection")
 async def test_surreal_connection_uses_helper_adapter(mock_http_conn):
@@ -115,9 +144,35 @@ def test_http_upsert_uses_upsert_statement():
 
     mock_surreal_query.assert_called_once()
     sql = mock_surreal_query.call_args[0][0]
-    assert sql.startswith("UPSERT exchange_filing:test CONTENT")
+    assert sql.startswith("UPSERT exchange_filing:⟨test⟩ CONTENT")
     assert "updatedAt: d'2026-09-01T00:00:00Z'" in sql
     assert "sheetName" not in sql
+
+
+def test_http_upsert_uses_rpc_for_large_documents():
+    """Large HTML filings should bypass the smaller /sql request limit."""
+    with patch("fin_pipeline.db.connection.surreal_query") as mock_surreal_query, \
+         patch("fin_pipeline.db.connection.surreal_rpc") as mock_surreal_rpc:
+        mock_surreal_rpc.return_value = {"result": [{"status": "OK"}]}
+
+        async def run():
+            adapter = __import__("fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"])._HttpSurrealConnection()
+            await adapter.upsert(
+                "exchange_filing:large",
+                {"filingId": "large", "updatedAt": "2026-09-01T00:00:00Z", "documentText": "x" * 900_000},
+            )
+
+        import asyncio
+        asyncio.run(run())
+
+    mock_surreal_query.assert_not_called()
+    mock_surreal_rpc.assert_called_once()
+    method, params = mock_surreal_rpc.call_args.args[:2]
+    assert method == "query"
+    assert params[0] == "UPSERT type::record($table, $key) CONTENT $payload;"
+    assert params[1]["table"] == "exchange_filing"
+    assert params[1]["key"] == "large"
+    assert params[1]["payload"]["documentText"] == "x" * 900_000
 
 
 def test_http_delete_record_removes_stale_partial_data():
@@ -132,4 +187,4 @@ def test_http_delete_record_removes_stale_partial_data():
         import asyncio
         asyncio.run(run())
 
-    mock_surreal_query.assert_called_once_with("DELETE exchange_filing:test;", timeout=60)
+    mock_surreal_query.assert_called_once_with("DELETE exchange_filing:⟨test⟩;", timeout=60)

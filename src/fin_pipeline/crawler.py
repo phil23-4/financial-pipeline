@@ -32,3 +32,66 @@ def scan_directory(dir_path: str, recursive: bool = True) -> Generator[Tuple[str
             "referencedTickers": []
         }
         yield file_path, metadata
+
+
+def scan_sec_edgar_html_directory(base_path: str) -> Generator[Tuple[str, Dict[str, Any]], None, None]:
+    """Scan SEC Edgar HTML directory structure.
+    
+    Expected structure: {base_path}/sec-edgar-filings/{TICKER}/{FILING_TYPE}/{ACCESSION_NUMBER}/primary-document.html
+    
+    Args:
+        base_path: Root directory containing sec-edgar-filings folder
+        
+    Yields:
+        (file_path, metadata) tuples for each primary-document.html found
+    """
+    if not os.path.isdir(base_path):
+        raise NotADirectoryError(f"Target path is not a valid directory: {base_path}")
+    
+    sec_edgar_root = os.path.join(base_path, "sec-edgar-filings")
+    if not os.path.isdir(sec_edgar_root):
+        # Try treating base_path as the direct root
+        sec_edgar_root = base_path
+    
+    # Walk through: sec-edgar-filings/TICKER/FILING_TYPE/ACCESSION_NUMBER/
+    for ticker_dir in os.listdir(sec_edgar_root):
+        ticker_path = os.path.join(sec_edgar_root, ticker_dir)
+        if not os.path.isdir(ticker_path) or ticker_dir.startswith('.'):
+            continue
+        
+        ticker = ticker_dir.upper()
+        
+        # Walk through filing types (10-K, 20-F, etc.)
+        for filing_type_dir in os.listdir(ticker_path):
+            filing_type_path = os.path.join(ticker_path, filing_type_dir)
+            if not os.path.isdir(filing_type_path) or filing_type_dir.startswith('.'):
+                continue
+            
+            filing_type = filing_type_dir
+            
+            # Walk through accession numbers
+            for accession_dir in os.listdir(filing_type_path):
+                accession_path = os.path.join(filing_type_path, accession_dir)
+                if not os.path.isdir(accession_path) or accession_dir.startswith('.'):
+                    continue
+                
+                accession_number = accession_dir
+                
+                # Look for primary-document.html
+                html_file = os.path.join(accession_path, "primary-document.html")
+                if os.path.isfile(html_file):
+                    # Create filing ID from accession number
+                    filing_id = f"sec_{ticker}_{accession_number}"
+                    
+                    metadata = {
+                        "filingId": filing_id,
+                        "companyTicker": ticker,
+                        "stockCode": "UNKNOWN",
+                        "exchange": "UNKNOWN",
+                        "filingType": filing_type,
+                        "title": f"{ticker} {filing_type}",
+                        "filingDate": None,
+                        "referencedTickers": []
+                    }
+                    
+                    yield html_file, metadata
