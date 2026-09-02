@@ -19,6 +19,7 @@ DB_PASS = os.getenv("SURREAL_PASS", env_values.get("SURREAL_PASS", "secret"))
 DB_NS = os.getenv("SURREAL_NAMESPACE", env_values.get("SURREAL_NAMESPACE", "finance"))
 DB_DB = os.getenv("SURREAL_DATABASE", env_values.get("SURREAL_DATABASE", "analytics"))
 COMPANY_TABLE = os.getenv("COMPANY_TABLE", env_values.get("COMPANY_TABLE", "company"))
+EDGAR_IDENTITY = os.getenv("EDGAR_IDENTITY", env_values.get("EDGAR_IDENTITY", ""))
 
 # Backwards-compatible aliases expected by older helper code.
 SURREAL_ENDPOINT = DB_ENDPOINT

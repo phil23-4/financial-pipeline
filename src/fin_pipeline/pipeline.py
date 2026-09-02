@@ -5,7 +5,7 @@ from fin_pipeline.config.logger import pipeline_logger as log
 from fin_pipeline.models.schemas import ExchangeFilingModel
 from fin_pipeline.utils.crypto import calculate_file_hash
 from fin_pipeline.utils.pdf_parser import parse_pdf_layout
-from fin_pipeline.utils.html_parser import parse_html_file
+from fin_pipeline.utils.html_parser import parse_html_file, enrich_filing_metadata_with_edgartools
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.db.relations import establish_graph_relations
 from fin_pipeline.crawler import scan_directory
@@ -55,6 +55,9 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
         try:
             log.debug(f"🔍 Executing layout parser vector maps for target: {os.path.basename(file_path)}")
             parsed = parse_document(file_path)
+            if detect_file_type(file_path) == "html":
+                accession_number = str(metadata_input.get("filingId", "")).removeprefix("sec_")
+                parsed = enrich_filing_metadata_with_edgartools(parsed, accession_number)
             
             payload.update({
                 "documentHash": calculate_file_hash(file_path),

@@ -89,6 +89,7 @@ def test_extract_filing_metadata_from_inline_xbrl():
         "filingDate": "2021-12-31",
         "filingType": "10-K",
         "exchange": None,
+        "cik": None,
     }
 
 

@@ -72,6 +72,9 @@ pip install .
 
 # Development installation (includes Pytest, Black formatter, and code verification modules)
 pip install -e .[dev]
+
+# Optional SEC metadata enrichment
+pip install -e .[sec]
 ```
 
 ---
@@ -88,6 +91,7 @@ Configure your local system ledger parameters by exporting variables or passing 
 | `SURREAL_NAMESPACE`      | Database validation cluster cluster namespace   | `finance`                 |
 | `SURREAL_DATABASE`       | Target working database storage instance        | `analytics`               |
 | `COMPANY_TABLE`          | Parent nodes table containing company entries   | `company`                 |
+| `EDGAR_IDENTITY`         | SEC User-Agent identity for optional edgartools enrichment | empty (disabled) |
 | `FIN_PIPELINE_LOG_LEVEL` | Terminal and file log filtration visibility     | `INFO`                    |
 | `FIN_PIPELINE_LOG_DIR`   | Output destination directory path for telemetry | `logs`                    |
 
@@ -110,6 +114,8 @@ fin-pipeline scan /absolute/path/to/financial/reports --source LOCAL --concurren
 #### Scenario B: Processing SEC Edgar HTML Filings from Directory Structure
 
 Discover and process SEC Edgar HTML filings stored in a local directory hierarchy. The pipeline extracts ticker, filing type, and accession number from the directory structure, then reads company name, fiscal period end date, and exchange from the HTML document's Inline XBRL and filing text.
+
+When `EDGAR_IDENTITY` is configured, `edgartools` optionally enriches the filing with SEC submission metadata. BeautifulSoup remains the local parser for document text and tables, and any edgartools dependency, identity, network, or lookup failure falls back to locally extracted metadata.
 
 **Expected directory structure:**
 ```
@@ -142,6 +148,12 @@ fin-pipeline file ./downloads/filing.html \
   --filing-id "sec_manual_filing" \
   --ticker "AAPL" \
   --type "10-K"
+```
+
+To enable SEC metadata enrichment, set a descriptive SEC User-Agent identity in `.env`:
+
+```dotenv
+EDGAR_IDENTITY=Your Name your.email@example.com
 ```
 
 #### Scenario C: Ingesting an Explicit SEC Regulatory Filing
@@ -199,7 +211,8 @@ PDF or HTML Input
    ↓
 [1] Text & Layout Extraction
    ├─ PDF digital-native parsing with OCR fallback
-   └─ HTML text/table parsing and Inline XBRL metadata extraction
+   ├─ HTML text/table parsing and Inline XBRL metadata extraction
+   └─ Optional edgartools SEC metadata enrichment
    ↓
 [2] Pydantic Schema Validation
    └─ Type coercion & field validation

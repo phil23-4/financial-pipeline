@@ -24,6 +24,7 @@ def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
     company_name = _ixbrl_value(soup, "EntityRegistrantName")
     filing_date = _ixbrl_value(soup, "DocumentPeriodEndDate")
     filing_type = _ixbrl_value(soup, "DocumentType")
+    cik = _ixbrl_value(soup, "EntityCentralIndexKey")
     visible_text = soup.get_text(" ", strip=True).lower()
     exchange_names = {
         "new york stock exchange": "NYSE",
@@ -56,7 +57,50 @@ def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
         "filingDate": filing_date,
         "filingType": filing_type,
         "exchange": exchange,
+        "cik": cik,
     }
+
+
+def enrich_filing_metadata_with_edgartools(
+    metadata: Dict[str, Any], accession_number: str
+) -> Dict[str, Any]:
+    """Best-effort SEC metadata enrichment using edgartools.
+
+    The local parser remains authoritative for document text and tables. This
+    helper only fills missing metadata and returns unchanged data when the
+    optional dependency, identity, or SEC network is unavailable.
+    """
+    import os
+    from fin_pipeline.config.settings import EDGAR_IDENTITY
+
+    if not (os.getenv("EDGAR_IDENTITY") or EDGAR_IDENTITY) or not metadata.get("cik"):
+        return metadata
+
+    try:
+        from edgar import Company
+
+        filings = Company(metadata["cik"]).get_filings(
+            form=metadata.get("filingType"), accession_number=accession_number
+        )
+        if not filings:
+            return metadata
+        filing = filings[0]
+        enriched = dict(metadata)
+        for key, attributes in {
+            "stockName": ("company_name", "companyName"),
+            "filingDate": ("period_of_report", "periodOfReport"),
+            "filingType": ("form",),
+            "exchange": ("exchange",),
+        }.items():
+            if enriched.get(key) in (None, "", "UNKNOWN"):
+                for attribute in attributes:
+                    value = getattr(filing, attribute, None)
+                    if value:
+                        enriched[key] = value.isoformat() if hasattr(value, "isoformat") else str(value)
+                        break
+        return enriched
+    except Exception:
+        return metadata
 
 def extract_text_from_html(html_content: str) -> str:
     """Extract plain text from HTML content, removing scripts and styles."""
