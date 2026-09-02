@@ -39,3 +39,8 @@ logs/
 .ipynb_checkpoints/
 
 *.pdf
+
+# Operating System Binary Metadata files
+src/fin_pipeline/.DS_Store
+src/.DS_Store
+.DS_Store

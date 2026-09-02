@@ -13,12 +13,12 @@ if dotenv_values is not None:
     if env_path.exists():
         env_values = dotenv_values(env_path)
 
-DB_ENDPOINT = os.getenv("SURREAL_ENDPOINT", env_values.get("SURREAL_ENDPOINT", "http://127.0.0.1:8000"))
+DB_ENDPOINT = os.getenv("SURREAL_ENDPOINT", env_values.get("SURREAL_ENDPOINT", ""))
 DB_USER = os.getenv("SURREAL_USER", env_values.get("SURREAL_USER", "root"))
-DB_PASS = os.getenv("SURREAL_PASS", env_values.get("SURREAL_PASS", "secret"))
-DB_NS = os.getenv("SURREAL_NAMESPACE", env_values.get("SURREAL_NAMESPACE", "finance"))
-DB_DB = os.getenv("SURREAL_DATABASE", env_values.get("SURREAL_DATABASE", "analytics"))
-COMPANY_TABLE = os.getenv("COMPANY_TABLE", env_values.get("COMPANY_TABLE", "company"))
+DB_PASS = os.getenv("SURREAL_PASS", env_values.get("SURREAL_PASS", ""))
+DB_NS = os.getenv("SURREAL_NAMESPACE", env_values.get("SURREAL_NAMESPACE", ""))
+DB_DB = os.getenv("SURREAL_DATABASE", env_values.get("SURREAL_DATABASE", ""))
+COMPANY_TABLE = os.getenv("COMPANY_TABLE", env_values.get("COMPANY_TABLE", ""))
 EDGAR_IDENTITY = os.getenv("EDGAR_IDENTITY", env_values.get("EDGAR_IDENTITY", ""))
 
 # Backwards-compatible aliases expected by older helper code.
