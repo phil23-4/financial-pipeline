@@ -26,8 +26,6 @@ This package is designed for financial-document processing pipelines that need t
 financial-pipeline/
 ├── pyproject.toml
 ├── README.md
-├── DATA_MAPPING_RECOMMENDATION.md
-├── IMPLEMENTATION_SUMMARY.md
 ├── src/
 │   └── fin_pipeline/
 │       ├── __init__.py
