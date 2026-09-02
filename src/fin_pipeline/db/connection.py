@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from fin_pipeline.config.settings import DB_ENDPOINT, DB_AUTH
 from fin_pipeline.db.db import initialize_schema, surreal_query, surreal_rpc
+from fin_pipeline.utils.db_utils import quote_record_id
 
 
 # SurrealDB's /sql endpoint has a smaller request limit than /rpc.
@@ -21,10 +22,7 @@ def _raise_for_query_error(response):
     return response
 
 
-def _quote_record_id(record_id: str) -> str:
-    """Quote record IDs so hyphenated accession numbers are not parsed as subtraction."""
-    table, _, key = record_id.partition(":")
-    return f"{table}:⟨{key}⟩" if key else record_id
+
 
 
 def _prune_none_values(value):
@@ -84,7 +82,7 @@ class _HttpSurrealConnection:
 
     async def delete_record(self, record_id: str):
         """Delete a stale record so a fresh write does not reuse partial data."""
-        response = surreal_query(f"DELETE {_quote_record_id(record_id)};", timeout=60)
+        response = surreal_query(f"DELETE {quote_record_id(record_id)};", timeout=60)
         return _raise_for_query_error(response)
 
     async def upsert(self, record_id: str, payload: dict):
@@ -92,7 +90,7 @@ class _HttpSurrealConnection:
         if "updatedAt" not in payload or payload["updatedAt"] is None:
             payload["updatedAt"] = datetime.now(timezone.utc)
 
-        quoted_record_id = _quote_record_id(record_id)
+        quoted_record_id = quote_record_id(record_id)
         query = f"UPSERT {quoted_record_id} CONTENT {_surrealql_literal(payload)};"
         if len(query.encode("utf-8")) > _SQL_UPSERT_LIMIT_BYTES:
             table, _, key = record_id.partition(":")
@@ -133,3 +131,25 @@ class SurrealConnection:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.db:
             await self.db.close()
+
+
+class SurrealPooledConnection:
+    """Async Context Manager that uses a pooled SurrealDB connection for better performance.
+    
+    Recommended for high-concurrency scenarios to reuse connections across requests.
+    """
+
+    def __init__(self):
+        from fin_pipeline.db.connection_pool import SurrealConnectionPool
+        self.pool = SurrealConnectionPool()
+        self.db = None
+
+    async def __aenter__(self):
+        self.db = await self.pool.get_connection()
+        initialize_schema()
+        return self.db
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.db:
+            await self.db.close()
+

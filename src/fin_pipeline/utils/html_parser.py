@@ -4,6 +4,7 @@ import os
 from bs4 import BeautifulSoup
 from typing import Dict, List, Any
 import re
+from fin_pipeline.config.constants import EXCHANGE_MAPPING
 
 
 def _ixbrl_value(soup: BeautifulSoup, field_name: str) -> str | None:
@@ -26,16 +27,8 @@ def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
     filing_type = _ixbrl_value(soup, "DocumentType")
     cik = _ixbrl_value(soup, "EntityCentralIndexKey")
     visible_text = soup.get_text(" ", strip=True).lower()
-    exchange_names = {
-        "new york stock exchange": "NYSE",
-        "nasdaq stock market": "NASDAQ",
-        "nasdaq": "NASDAQ",
-        "london stock exchange": "LSE",
-        "hong kong stock exchange": "HKEX",
-        "toronto stock exchange": "TSX",
-    }
     exchange = next(
-        (normalized for name, normalized in exchange_names.items() if name in visible_text),
+        (normalized for name, normalized in EXCHANGE_MAPPING.items() if name in visible_text),
         None,
     )
 

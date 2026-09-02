@@ -2,6 +2,8 @@ import os
 import glob
 from typing import Generator, Tuple, Dict, Any
 from fin_pipeline.utils.crypto import calculate_file_hash
+from fin_pipeline.config.constants import DEFAULT_TICKER, DEFAULT_EXCHANGE, DEFAULT_FILING_TYPE, LOCAL_EXCHANGE
+from loguru import logger as log
 
 def scan_directory(dir_path: str, recursive: bool = True) -> Generator[Tuple[str, Dict[str, Any]], None, None]:
     """Scans local directories for financial PDF assets and prepares baseline meta attributes."""
@@ -18,15 +20,16 @@ def scan_directory(dir_path: str, recursive: bool = True) -> Generator[Tuple[str
         try:
             file_hash = calculate_file_hash(file_path)
             short_hash = file_hash[:8]
-        except Exception:
+        except (IOError, OSError) as e:
+            log.debug(f"Hash calculation failed for {file_path}: {e}")
             short_hash = str(os.path.getsize(file_path))
 
         metadata = {
             "filingId": f"local_{base_name}_{short_hash}",
-            "companyTicker": "UNKNOWN",
-            "stockCode": "UNKNOWN",
-            "exchange": "LOCAL_FS",
-            "filingType": "PRIVATE_REPORT",
+            "companyTicker": DEFAULT_TICKER,
+            "stockCode": DEFAULT_TICKER,
+            "exchange": LOCAL_EXCHANGE,
+            "filingType": DEFAULT_FILING_TYPE,
             "title": base_name.replace("_", " ").replace("-", " ").title(),
             "filingDate": None, 
             "referencedTickers": []
@@ -86,8 +89,8 @@ def scan_sec_edgar_html_directory(base_path: str) -> Generator[Tuple[str, Dict[s
                     metadata = {
                         "filingId": filing_id,
                         "companyTicker": ticker,
-                        "stockCode": "UNKNOWN",
-                        "exchange": "UNKNOWN",
+                        "stockCode": DEFAULT_TICKER,
+                        "exchange": DEFAULT_EXCHANGE,
                         "filingType": filing_type,
                         "title": f"{ticker} {filing_type}",
                         "filingDate": None,

@@ -3,6 +3,10 @@ import time
 import asyncio
 import hashlib
 from fin_pipeline.config.logger import pipeline_logger as log
+from fin_pipeline.config.constants import (
+    FILING_TABLE, STATUS_PROCESSED, STATUS_FAILED, SOURCE_LOCAL,
+    FILE_TYPE_PDF, FILE_TYPE_HTML, FILE_TYPE_UNKNOWN
+)
 from fin_pipeline.models.schemas import ExchangeFilingModel
 from fin_pipeline.utils.crypto import calculate_file_hash
 from fin_pipeline.utils.pdf_parser import parse_pdf_layout
@@ -12,26 +16,43 @@ from fin_pipeline.db.relations import establish_graph_relations
 from fin_pipeline.crawler import scan_directory
 
 def detect_file_type(file_path: str) -> str:
-    """Detect file type based on extension."""
+    """Detect file type based on extension.
+    
+    Args:
+        file_path: Path to file
+        
+    Returns:
+        File type: 'pdf', 'html', or 'unknown'
+    """
     _, ext = os.path.splitext(file_path.lower())
     if ext == '.pdf':
-        return 'pdf'
+        return FILE_TYPE_PDF
     elif ext == '.html':
-        return 'html'
+        return FILE_TYPE_HTML
     else:
-        return 'unknown'
+        return FILE_TYPE_UNKNOWN
 
 def parse_document(file_path: str) -> dict:
-    """Parse document based on file type (PDF or HTML).
+    """Parse document content and extract text and tables based on file type.
     
+    Supports PDF and HTML files. Automatically detects format and applies 
+    appropriate parsing strategy.
+    
+    Args:
+        file_path: Absolute path to document file (PDF or HTML)
+        
     Returns:
-        dict with keys: text, tables, table_cnt, reason
+        dict with keys:
+            - text (str): Extracted text content
+            - tables (list): Extracted structured tables
+            - table_cnt (int): Number of tables extracted
+            - reason (str): Parsing method used or error description
     """
     file_type = detect_file_type(file_path)
     
-    if file_type == 'pdf':
+    if file_type == FILE_TYPE_PDF:
         return parse_pdf_layout(file_path)
-    elif file_type == 'html':
+    elif file_type == FILE_TYPE_HTML:
         return parse_html_file(file_path)
     else:
         return {
@@ -42,7 +63,22 @@ def parse_document(file_path: str) -> dict:
         }
 
 async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: str) -> bool:
-    """Executes single file pipeline extraction layers, schema checks, and database commits."""
+    """Execute complete document ingestion pipeline with extraction, validation, and database commit.
+    
+    Processes a single document through the following stages:
+    1. Document parsing (text and table extraction)
+    2. Metadata enrichment with SEC Edgar data
+    3. Pydantic schema validation
+    4. Database upsert and relationship establishment
+    
+    Args:
+        metadata_input: Dictionary with filing metadata (filingId, companyTicker, etc.)
+        file_path: Absolute path to document file to process
+        source: Source identifier ('SEC', 'LOCAL', etc.)
+        
+    Returns:
+        bool: True if processing completed successfully, False otherwise
+    """
     filing_id = metadata_input.get("filingId", "UNKNOWN_ID")
     start_time = time.time()
     
@@ -56,7 +92,7 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
         try:
             log.debug(f"🔍 Executing layout parser vector maps for target: {os.path.basename(file_path)}")
             parsed = parse_document(file_path)
-            if detect_file_type(file_path) == "html":
+            if detect_file_type(file_path) == FILE_TYPE_HTML:
                 accession_number = str(metadata_input.get("filingId", "")).removeprefix("sec_")
                 parsed = enrich_filing_metadata_with_edgartools(parsed, accession_number)
             
@@ -67,7 +103,7 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
                 "documentTextLen": len(parsed["text"]),
                 "documentTables": parsed["tables"],
                 "documentTableCnt": parsed["table_cnt"],
-                "documentStatus": "PROCESSED",
+                "documentStatus": STATUS_PROCESSED,
                 "documentStatusReason": parsed["reason"],
                 "documentType": detect_file_type(file_path).upper()
             })
@@ -77,14 +113,14 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
                     payload[metadata_key] = parsed[metadata_key]
             log.success(f"📝 Text & layout extraction parsed successfully via strategy: {parsed['reason']}")
             
-        except Exception as exc:
+        except (IOError, OSError, ValueError, KeyError) as exc:
             log.exception(f"💥 Failed parser engine step processing file layout layers: {file_path}")
-            payload.update({"documentStatus": "FAILED", "documentStatusReason": f"Layout Error: {str(exc)}"})
+            payload.update({"documentStatus": STATUS_FAILED, "documentStatusReason": f"Layout Error: {str(exc)}"})
 
     try:
         validated_record = ExchangeFilingModel(**payload).model_dump()
-        record_id = f"exchange_filing:{validated_record['filingId']}"
-    except Exception as validation_err:
+        record_id = f"{FILING_TABLE}:{validated_record['filingId']}"
+    except ValueError as validation_err:
         log.critical(f"🛡️ Pydantic schema validation blocked record initialization: {filing_id} | Errors: {validation_err}")
         return False
 
@@ -139,17 +175,17 @@ async def run_html_content_pipeline(metadata_input: dict, html_content: str, sou
         for metadata_key in ("stockName", "filingDate", "filingType", "exchange"):
             if parsed.get(metadata_key) and payload.get(metadata_key) in (None, "", "UNKNOWN"):
                 payload[metadata_key] = parsed[metadata_key]
-    except Exception as exc:
+    except (IOError, OSError, ValueError) as exc:
         log.exception(f"💥 Failed in-memory HTML parser for filing {filing_id}")
-        payload.update({"documentStatus": "FAILED", "documentStatusReason": f"Layout Error: {exc}"})
+        payload.update({"documentStatus": STATUS_FAILED, "documentStatusReason": f"Layout Error: {exc}"})
 
     try:
         validated_record = ExchangeFilingModel(**payload).model_dump()
-        record_id = f"exchange_filing:{validated_record['filingId']}"
+        record_id = f"{FILING_TABLE}:{validated_record['filingId']}"
         async with SurrealConnection() as db:
             await db.delete_record(record_id)
             await db.upsert(record_id, validated_record)
-            if validated_record["documentStatus"] == "PROCESSED":
+            if validated_record["documentStatus"] == STATUS_PROCESSED:
                 await establish_graph_relations(
                     db=db,
                     filing_id=record_id,
@@ -160,21 +196,36 @@ async def run_html_content_pipeline(metadata_input: dict, html_content: str, sou
                 )
         log.info(f"🏆 Streamed filing {record_id} into SurrealDB in {time.time() - start_time:.2f}s")
         return True
-    except Exception as exc:
+    except (IOError, RuntimeError, ValueError, KeyError) as exc:
         log.error(f"📡 Stream database commit failed for {filing_id}: {exc}")
         return False
 
 
 async def process_entire_directory(dir_path: str, source_type: str = "LOCAL", concurrency_limit: int = 3):
-    """Executes full concurrent folder scans regulated via thread token boundaries (semaphores)."""
+    """Recursively scan and ingest all documents from directory with concurrent processing.
+    
+    Uses async semaphore to limit concurrent file processing, preventing resource exhaustion.
+    
+    Args:
+        dir_path: Root directory path containing documents
+        source_type: Source identifier for records ('LOCAL', 'SEC', etc.)
+        concurrency_limit: Maximum concurrent tasks
+    """
+    if not os.path.isdir(dir_path):
+        log.error(f"❌ Directory validation failed: {dir_path} is not a valid directory")
+        return
+    
     semaphore = asyncio.Semaphore(concurrency_limit)
+    errors = []
 
     async def worker(file_path: str, meta: dict):
         async with semaphore:
             try:
                 await run_ingestion_pipeline(meta, file_path, source=source_type)
-            except Exception as e:
-                log.error(f"❌ Worker thread execution failed for file {file_path}: {e}")
+            except (IOError, RuntimeError, ValueError) as e:
+                error_msg = f"Worker execution failed for {file_path}: {e}"
+                log.error(f"❌ {error_msg}")
+                errors.append(error_msg)
 
     tasks = []
     for file_path, generated_meta in scan_directory(dir_path, recursive=True):
@@ -184,7 +235,12 @@ async def process_entire_directory(dir_path: str, source_type: str = "LOCAL", co
         log.warning("🔍 No PDF assets detected inside target folder path.")
         return
 
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks, return_exceptions=True)
+    
+    if errors:
+        log.warning(f"⚠️ Completed with {len(errors)} errors during batch processing")
+        for error in errors:
+            log.debug(f"  - {error}")
 
 async def process_sec_edgar_html_directory(dir_path: str, source_type: str = "SEC", concurrency_limit: int = 3):
     """Process SEC Edgar HTML filings sequentially from directory structure.
@@ -217,6 +273,14 @@ async def process_sec_edgar_html_directory(dir_path: str, source_type: str = "SE
 async def process_sec_edgar_csv(csv_path: str, download_dir: str = "sec_downloads"):
     """Fetch and ingest SEC filings listed in a CSV, sequentially."""
     from fin_pipeline.sec_edgar import fetch_filings_from_csv
+    
+    if not os.path.isfile(csv_path):
+        log.error(f"❌ CSV file validation failed: {csv_path} is not a valid file")
+        return False
+    
+    if not os.access(csv_path, os.R_OK):
+        log.error(f"❌ CSV file permission error: {csv_path} is not readable")
+        return False
 
     processed = 0
     for file_path, metadata in fetch_filings_from_csv(csv_path, download_dir):

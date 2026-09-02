@@ -3,7 +3,21 @@ from pypdf import PdfReader
 from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
 
 def parse_pdf_layout(file_path: str) -> dict:
-    """Performs lightning-fast digital-native text extractions, with fallbacks to OCR if empty."""
+    """Extract text and tables from PDF with digital-native or OCR fallback.
+    
+    Attempts fast digital text extraction first. For scanned PDFs, falls back to 
+    OCR processing via Tesseract.
+    
+    Args:
+        file_path: Absolute path to PDF file
+        
+    Returns:
+        dict with keys:
+            - text (str): Extracted text content from all pages
+            - tables (list): List of extracted tables with structure metadata
+            - table_cnt (int): Total number of tables extracted
+            - reason (str): Extraction method used ('Digital Native' or 'OCR Scanner Fallback')
+    """
     extracted_text = []
     extracted_tables = []
     table_cnt = 0

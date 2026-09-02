@@ -21,6 +21,7 @@ from fin_pipeline.config.settings import (
     SURREAL_PASS,
     SURREAL_USER,
 )
+from fin_pipeline.utils.retry import retry_with_backoff
 
 
 def log(message: str) -> None:
@@ -40,8 +41,17 @@ def _get_auth_header() -> str:
 # Query
 # ---------------------------------------------------------------------------
 
+@retry_with_backoff(
+    max_attempts=3,
+    initial_delay=1.0,
+    max_delay=10.0,
+    retryable_exceptions=(urllib.error.URLError, TimeoutError),
+)
 def surreal_query(sql: str, timeout: int = 120) -> dict:
-    """Send SurrealQL to the ``/sql`` endpoint. Returns parsed JSON response."""
+    """Send SurrealQL to the ``/sql`` endpoint. Returns parsed JSON response.
+    
+    Automatically retries on network errors with exponential backoff.
+    """
     url = f"{SURREAL_ENDPOINT}/sql"
     auth = _get_auth_header()
     req = urllib.request.Request(
@@ -61,16 +71,26 @@ def surreal_query(sql: str, timeout: int = 120) -> dict:
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8") if e.fp else ""
         return {"error": f"HTTP {e.code}: {body[:500]}"}
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
 
+@retry_with_backoff(
+    max_attempts=3,
+    initial_delay=1.0,
+    max_delay=10.0,
+    retryable_exceptions=(urllib.error.URLError, TimeoutError),
+)
 def surreal_rpc(method: str, params: list, timeout: int = 120) -> dict:
     """Send a JSON-RPC request to the ``/rpc`` endpoint.
 
     The ``/rpc`` endpoint has a 4 MiB body limit (vs 1 MiB for ``/sql``),
     and supports parameterised queries where large values are passed as
     native JSON — no SQL string escaping needed.
+
+    Automatically retries on network errors with exponential backoff.
 
     Args:
         method: RPC method name (e.g. ``'query'``, ``'merge'``, ``'update'``).
@@ -114,6 +134,8 @@ def surreal_rpc(method: str, params: list, timeout: int = 120) -> dict:
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8") if e.fp else ""
         return {"error": f"HTTP {e.code}: {body_text[:500]}"}
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
