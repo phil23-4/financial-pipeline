@@ -5,12 +5,38 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fin_pipeline"
 version = "0.1.0"
-description = "A modular data processing pipeline for SEC filings and private PDFs into SurrealDB"
-readme = "README.md"
+description = "A modular data processing pipeline to extract and ingest SEC filings and private annual reports PDFs into SurrealDB"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
+license = { text = "MIT"}
+authors = [
+    { name = "Phillip Francis Chapita", email = "francis@phillipchapita.com" }
+]
+keywords = [
+    "finance",
+    "sec",
+    "edgar",
+    "financial-data",
+    "sec-filings",
+    "pdf",
+    "ocr",
+    "surrealdb",
+    "pdf-parser",
+    "xbrl",
+    "document-ingestion",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Topic :: Office/Business :: Financial",
     "Operating System :: OS Independent",
+    "Typing :: Typed",
 ]
 dependencies = [
     "click>=8.1.0",
@@ -27,11 +53,46 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0.0", "pytest-asyncio>=0.21.0"]
-sec = ["edgartools>=5.55.0"]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+sec = [
+    "edgartools>=5.55.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/fin_pipeline"
+Documentation = "https://github.com/your-org/fin_pipeline#readme"
+Repository = "https://github.com/your-org/fin_pipeline.git"
+Issues = "https://github.com/your-org/fin_pipeline/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [project.scripts]
 fin-pipeline = "fin_pipeline.cli:main"
+
+# Tool Configurations
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

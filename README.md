@@ -6,6 +6,7 @@ A production-grade, highly scalable modular Python package designed to extract m
 
 - **Dual Input Format Support**: Process both **PDF** (digital and scanned) and **HTML** document formats seamlessly
 - **Dual Extraction Strategy**: High-speed digital-native text extraction with automatic `pytesseract` OCR fallbacks for scanned images or faxed financial reports.
+- **Metadata Extraction**: Extracts company name, reporting date, filing form, exchange, and CIK from Inline XBRL HTML, PDF properties, and PDF text patterns.
 - **Table-to-Markdown Engine**: Parses grid geometry and structural visual layouts into standardized Markdown strings while tracking page indexes and row weights.
 - **SEC Edgar Directory Crawling**: Automatically discover and process HTML filings from local SEC Edgar directory structures with metadata extraction for company name, filing date, filing type, exchange, and document format.
 - **Auto-Company Seeding**: Automatically creates company records when first referenced by filing metadata—no manual database bootstrapping required.
@@ -29,20 +30,24 @@ financial-pipeline/
 │       ├── cli.py           # Command Line Interface (Click layer) - PDF, HTML, and SEC Edgar support
 │       ├── crawler.py       # Directory scanning (PDF, HTML, SEC Edgar structure parser)
 │       ├── pipeline.py      # Main ingestion orchestrator (parse → validate → DB upsert → graph relations)
+│       ├── sec_edgar.py     # SEC ticker/CIK CSV fetching and streaming
 │       ├── config/
 │       │   ├── settings.py  # Environment mappings & DB credentials
 │       │   └── logger.py    # Loguru configuration & JSON line serializer
 │       ├── db/
 │       │   ├── db.py        # Schema initialization, SQL helpers, connection utilities
-│       │   ├── connection.py# HTTP-based SurrealDB adapter with stale record cleanup
+│       │   ├── connection.py # HTTP-based SurrealDB adapter with stale record cleanup
+│       │   ├── connection_pool.py # Reusable SurrealDB connection pool
 │       │   └── relations.py # Auto-company creation & SurrealQL graph edge builder
 │       ├── models/
 │       │   └── schemas.py   # Strict Pydantic models matching SurrealDB SCHEMAFULL schema
 │       └── utils/
 │           ├── crypto.py    # Core file SHA256 checksum routines
-│           ├── ocr_engine.py# Pytesseract image converter fallback
-│           ├── pdf_parser.py# PDF layout bounding box scanner and markdown table builder
-│           └── html_parser.py# HTML text extraction and table parser (BeautifulSoup)
+│           ├── ocr_engine.py # Pytesseract image converter fallback
+│           ├── pdf_parser.py # PDF text, metadata, and Markdown table extraction
+│           ├── html_parser.py # HTML text, metadata, and table extraction
+│           ├── retry.py      # Network retry/backoff helper
+│           └── db_utils.py   # Shared database identifier utilities
 └── tests/                   # Pytest automation suite with async database setup & validation
 ```
 
@@ -70,11 +75,11 @@ Clone the repository workspace and compile it locally using standard pip command
 # Standard distribution installation
 pip install .
 
-# Development installation (includes Pytest, Black formatter, and code verification modules)
-pip install -e .[dev]
+# Development installation (includes the pytest test dependencies)
+pip install -e ".[dev]"
 
 # Optional SEC metadata enrichment
-pip install -e .[sec]
+pip install -e ".[sec]"
 ```
 
 ---
@@ -94,6 +99,40 @@ Configure your local system ledger parameters by exporting variables or passing 
 | `EDGAR_IDENTITY`         | SEC User-Agent identity for optional edgartools enrichment | empty (disabled) |
 | `FIN_PIPELINE_LOG_LEVEL` | Terminal and file log filtration visibility     | `INFO`                    |
 | `FIN_PIPELINE_LOG_DIR`   | Output destination directory path for telemetry | `logs`                    |
+
+---
+
+## 🧾 Metadata Extraction
+
+Every parser returns the common metadata keys when they can be identified:
+
+| Field | HTML source | PDF source |
+| :---- | :---------- | :--------- |
+| `stockName` | Inline XBRL `EntityRegistrantName` | PDF title and text near legal company suffixes |
+| `filingDate` | Inline XBRL `DocumentPeriodEndDate` | Reporting-period date patterns such as `As of December 31, 2025` |
+| `filingType` | Inline XBRL `DocumentType` | Form patterns such as `10-K`, `10-Q`, and `8-K` |
+| `exchange` | Filing text | Filing text and configured exchange mapping |
+| `cik` | Inline XBRL `EntityCentralIndexKey` | `CIK` labels in extracted text |
+
+PDF parsing uses embedded document properties first, then falls back to text
+patterns. Scanned PDFs use the same metadata extraction step after OCR. Dates
+are normalized to `YYYY-MM-DD` before the pipeline's Pydantic validation.
+
+Metadata supplied by the caller remains authoritative: the ingestion pipeline
+only fills a field from parser output when the caller supplied no value, an
+empty value, or `UNKNOWN`. This makes local extraction useful as a recovery
+path without overwriting trusted upstream metadata.
+
+Parser output also includes:
+
+- `text`: normalized document text
+- `tables`: extracted tables represented as Markdown with page and row metadata
+- `table_cnt`: number of extracted tables
+- `reason`: extraction strategy, such as `Digital Native` or `OCR Scanner Fallback`
+
+The optional `sec` extra enables `edgartools` enrichment for SEC filings when
+`EDGAR_IDENTITY` is configured. Local PDF and HTML parsing does not require
+that extra.
 
 ---
 
