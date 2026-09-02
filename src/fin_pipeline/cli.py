@@ -1,7 +1,7 @@
 import click
 import asyncio
 import os
-from fin_pipeline.pipeline import process_entire_directory, run_ingestion_pipeline, process_sec_edgar_html_directory
+from fin_pipeline.pipeline import process_entire_directory, run_ingestion_pipeline, process_sec_edgar_html_directory, process_sec_edgar_csv, process_sec_edgar_csv_stream
 
 @click.group()
 def main():
@@ -31,6 +31,23 @@ def sec_edgar_html(dir_path: str, concurrency: int):
     click.echo(f"📂 Scanning SEC Edgar HTML directory: {dir_path}")
     asyncio.run(process_sec_edgar_html_directory(dir_path, source_type="SEC", concurrency_limit=concurrency))
     click.echo("✨ SEC Edgar HTML processing task successfully closed out.")
+
+@main.command()
+@click.argument('csv_path', type=click.Path(exists=True, dir_okay=False))
+@click.option('--download-dir', default='sec_downloads', show_default=True, help='Directory for downloaded primary HTML documents')
+def sec_edgar_csv(csv_path: str, download_dir: str):
+    """Fetch SEC filings for ticker/CIK rows in a CSV and ingest them."""
+    click.echo(f"📄 Reading SEC company list: {csv_path}")
+    asyncio.run(process_sec_edgar_csv(csv_path, download_dir=download_dir))
+    click.echo("✨ SEC CSV processing task successfully closed out.")
+
+@main.command()
+@click.argument('csv_path', type=click.Path(exists=True, dir_okay=False))
+def sec_edgar_stream(csv_path: str):
+    """Fetch SEC filings from a CSV and ingest HTML directly from memory."""
+    click.echo(f"🌐 Streaming SEC company list: {csv_path}")
+    asyncio.run(process_sec_edgar_csv_stream(csv_path))
+    click.echo("✨ SEC streaming task successfully closed out.")
 
 @main.command()
 @click.argument('file_path', type=click.Path(exists=True, file_okay=True, dir_okay=False))

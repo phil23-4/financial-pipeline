@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from fin_pipeline.config.logger import serialize_json_log
 from fin_pipeline.db.connection import SurrealConnection
-from fin_pipeline.pipeline import run_ingestion_pipeline
+from fin_pipeline.pipeline import run_ingestion_pipeline, run_html_content_pipeline
 from fin_pipeline.utils.html_parser import extract_filing_metadata
 
 @pytest.mark.asyncio
@@ -97,6 +97,34 @@ def test_extract_filing_metadata_finds_exchange_in_document_text():
     html = "<p>Name of each exchange on which registered: New York Stock Exchange</p>"
 
     assert extract_filing_metadata(html)["exchange"] == "NYSE"
+
+
+@pytest.mark.asyncio
+@patch("fin_pipeline.pipeline.SurrealConnection")
+@patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
+async def test_html_content_pipeline_ingests_without_file(
+    mock_graph_rel, mock_surreal_conn
+):
+    mock_db = AsyncMock()
+    mock_surreal_conn.return_value.__aenter__.return_value = mock_db
+
+    completed = await run_html_content_pipeline(
+        {
+            "filingId": "sec_AAPL_0000320193-25-000079",
+            "companyTicker": "AAPL",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+        },
+        '<ix:nonNumeric name="dei:EntityRegistrantName">Apple Inc.</ix:nonNumeric>',
+    )
+
+    assert completed is True
+    mock_db.upsert.assert_called_once()
+    payload = mock_db.upsert.call_args.args[1]
+    assert payload["documentType"] == "HTML"
+    assert payload["stockName"] == "Apple Inc."
+    mock_graph_rel.assert_awaited_once()
 
 
 @pytest.mark.parametrize("date_text", ["December 31, 2019", "December 31 , 2019", "December\u00a031,\u00a02019"])

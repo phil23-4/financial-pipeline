@@ -1,11 +1,12 @@
 import os
 import time
 import asyncio
+import hashlib
 from fin_pipeline.config.logger import pipeline_logger as log
 from fin_pipeline.models.schemas import ExchangeFilingModel
 from fin_pipeline.utils.crypto import calculate_file_hash
 from fin_pipeline.utils.pdf_parser import parse_pdf_layout
-from fin_pipeline.utils.html_parser import parse_html_file, enrich_filing_metadata_with_edgartools
+from fin_pipeline.utils.html_parser import parse_html_file, parse_html_content, enrich_filing_metadata_with_edgartools
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.db.relations import establish_graph_relations
 from fin_pipeline.crawler import scan_directory
@@ -87,6 +88,7 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
         log.critical(f"🛡️ Pydantic schema validation blocked record initialization: {filing_id} | Errors: {validation_err}")
         return False
 
+
     try:
         log.debug(f"💾 Opening connection channel block to SurrealDB for record update: {record_id}")
         async with SurrealConnection() as db:
@@ -111,6 +113,57 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
     except Exception as db_err:
         log.error(f"📡 Database adapter failed to securely commit transaction records for id: {record_id} | Err: {db_err}")
         return False
+
+
+async def run_html_content_pipeline(metadata_input: dict, html_content: str, source: str = "SEC") -> bool:
+    """Parse and ingest SEC HTML held in memory, without writing it to disk."""
+    filing_id = metadata_input.get("filingId", "UNKNOWN_ID")
+    start_time = time.time()
+    payload = {**metadata_input, "source": source.upper()}
+    try:
+        parsed = parse_html_content(html_content)
+        accession_number = str(filing_id).removeprefix("sec_")
+        parsed = enrich_filing_metadata_with_edgartools(parsed, accession_number)
+        content_bytes = html_content.encode("utf-8")
+        payload.update({
+            "documentHash": hashlib.sha256(content_bytes).hexdigest(),
+            "documentSize": len(content_bytes),
+            "documentText": parsed["text"],
+            "documentTextLen": len(parsed["text"]),
+            "documentTables": parsed["tables"],
+            "documentTableCnt": parsed["table_cnt"],
+            "documentStatus": "PROCESSED",
+            "documentStatusReason": parsed["reason"],
+            "documentType": "HTML",
+        })
+        for metadata_key in ("stockName", "filingDate", "filingType", "exchange"):
+            if parsed.get(metadata_key) and payload.get(metadata_key) in (None, "", "UNKNOWN"):
+                payload[metadata_key] = parsed[metadata_key]
+    except Exception as exc:
+        log.exception(f"💥 Failed in-memory HTML parser for filing {filing_id}")
+        payload.update({"documentStatus": "FAILED", "documentStatusReason": f"Layout Error: {exc}"})
+
+    try:
+        validated_record = ExchangeFilingModel(**payload).model_dump()
+        record_id = f"exchange_filing:{validated_record['filingId']}"
+        async with SurrealConnection() as db:
+            await db.delete_record(record_id)
+            await db.upsert(record_id, validated_record)
+            if validated_record["documentStatus"] == "PROCESSED":
+                await establish_graph_relations(
+                    db=db,
+                    filing_id=record_id,
+                    owning_ticker=validated_record["companyTicker"],
+                    owning_company_name=validated_record.get("stockName"),
+                    owning_exchange=validated_record.get("exchange"),
+                    referenced_tickers=validated_record.get("referencedTickers", []),
+                )
+        log.info(f"🏆 Streamed filing {record_id} into SurrealDB in {time.time() - start_time:.2f}s")
+        return True
+    except Exception as exc:
+        log.error(f"📡 Stream database commit failed for {filing_id}: {exc}")
+        return False
+
 
 async def process_entire_directory(dir_path: str, source_type: str = "LOCAL", concurrency_limit: int = 3):
     """Executes full concurrent folder scans regulated via thread token boundaries (semaphores)."""
@@ -159,3 +212,33 @@ async def process_sec_edgar_html_directory(dir_path: str, source_type: str = "SE
         return
 
     log.info(f"📋 Processed {file_count} SEC Edgar HTML filings sequentially.")
+
+
+async def process_sec_edgar_csv(csv_path: str, download_dir: str = "sec_downloads"):
+    """Fetch and ingest SEC filings listed in a CSV, sequentially."""
+    from fin_pipeline.sec_edgar import fetch_filings_from_csv
+
+    processed = 0
+    for file_path, metadata in fetch_filings_from_csv(csv_path, download_dir):
+        processed += 1
+        log.info(f"📄 Processing downloaded SEC filing {processed}: {file_path}")
+        if not await run_ingestion_pipeline(metadata, str(file_path), source="SEC"):
+            log.error("⏹️ Stopping CSV SEC batch because the current filing failed.")
+            return False
+
+    log.info(f"📋 Processed {processed} SEC filings from CSV sequentially.")
+    return True
+
+
+async def process_sec_edgar_csv_stream(csv_path: str):
+    """Fetch and ingest SEC filings from CSV without local files."""
+    from fin_pipeline.sec_edgar import stream_filings_from_csv
+
+    processed = 0
+    for html_content, metadata in stream_filings_from_csv(csv_path):
+        processed += 1
+        if not await run_html_content_pipeline(metadata, html_content):
+            log.error("⏹️ Stopping streamed SEC batch because the current filing failed.")
+            return False
+    log.info(f"📋 Streamed {processed} SEC filings from CSV sequentially.")
+    return True

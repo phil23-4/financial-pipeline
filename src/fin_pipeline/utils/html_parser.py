@@ -169,6 +169,19 @@ def extract_tables_from_html(html_content: str) -> tuple:
     
     return extracted_tables, len(extracted_tables), "html_beautifulsoup"
 
+
+def parse_html_content(html_content: str) -> Dict[str, Any]:
+    """Parse HTML already held in memory without creating a local file."""
+    text = extract_text_from_html(html_content)
+    tables, table_cnt, reason = extract_tables_from_html(html_content)
+    return {
+        "text": text,
+        "tables": tables,
+        "table_cnt": table_cnt,
+        "reason": reason,
+        **extract_filing_metadata(html_content),
+    }
+
 def parse_html_file(file_path: str) -> Dict[str, Any]:
     """Parse an HTML SEC Edgar filing and extract text and tables.
     
@@ -201,26 +214,7 @@ def parse_html_file(file_path: str) -> Dict[str, Any]:
             "reason": f"Read error: {str(e)}"
         }
     
-    # Extract text
     try:
-        text = extract_text_from_html(html_content)
+        return parse_html_content(html_content)
     except Exception as e:
-        text = ""
-    
-    # Extract tables
-    try:
-        tables, table_cnt, reason = extract_tables_from_html(html_content)
-    except Exception as e:
-        tables = []
-        table_cnt = 0
-        reason = f"Table extraction error: {str(e)}"
-
-    metadata = extract_filing_metadata(html_content)
-    
-    return {
-        "text": text,
-        "tables": tables,
-        "table_cnt": table_cnt,
-        "reason": reason,
-        **metadata
-    }
+        return {"text": "", "tables": [], "table_cnt": 0, "reason": f"Parse error: {str(e)}"}

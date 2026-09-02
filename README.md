@@ -170,6 +170,36 @@ fin-pipeline file ./downloads/apple_10k.pdf \
   --source SEC
 ```
 
+#### Scenario D: Fetching SEC Filings from a Ticker/CIK CSV
+
+Use `edgartools` to retrieve SEC primary HTML documents for companies listed in a CSV. Each row must contain either `ticker` or `cik`. Optional columns are `forms` (comma-separated forms such as `10-K,10-Q`), `year`, and `max_filings`.
+
+Example `companies.csv`:
+
+```csv
+ticker,cik,forms,year,max_filings
+AAPL,,10-K,2024,1
+,0000070858,10-K,2023,1
+```
+
+Set an SEC-compliant identity and install the optional dependency before running:
+
+```bash
+pip install -e ".[sec]"
+export EDGAR_IDENTITY="Your Name your.email@example.com"
+fin-pipeline sec-edgar-csv ./companies.csv --download-dir ./sec_downloads
+```
+
+The command fetches each primary HTML document, stores it under `--download-dir`, parses its text and tables with BeautifulSoup, optionally enriches metadata with `edgartools`, and persists it through the existing sequential database and graph workflow. A failed filing stops the batch and is logged with its accession number.
+
+To stream the same filings directly into the database without writing HTML files locally, use:
+
+```bash
+fin-pipeline sec-edgar-stream ./companies.csv
+```
+
+Streaming still processes one filing at a time and stores extracted text, tables, metadata, and hashes in SurrealDB. The raw HTML remains in memory only, so a failed filing must be fetched again when retried.
+
 ### Python Package Integration
 
 You can easily import core components directly into your own data platforms or automated workflows:
