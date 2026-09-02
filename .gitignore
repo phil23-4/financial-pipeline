@@ -15,6 +15,7 @@ env/
 # Editor / OS files
 .vscode/
 .DS_Store
+**/.DS_Store
 
 # Test / coverage outputs
 .pytest_cache/
@@ -40,7 +41,3 @@ logs/
 
 *.pdf
 
-# Operating System Binary Metadata files
-src/fin_pipeline/.DS_Store
-src/.DS_Store
-.DS_Store
