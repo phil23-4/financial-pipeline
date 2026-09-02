@@ -43,10 +43,24 @@ def sec_edgar_csv(csv_path: str, download_dir: str):
 
 @main.command()
 @click.argument('csv_path', type=click.Path(exists=True, dir_okay=False))
-def sec_edgar_stream(csv_path: str):
+@click.option('--year-range', help='Inclusive filing year range, for example 2018-2025')
+@click.option('--forms', help='Comma-separated SEC forms, for example 10-K,10-Q')
+def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None):
     """Fetch SEC filings from a CSV and ingest HTML directly from memory."""
+    parsed_year_range = None
+    if year_range:
+        try:
+            start_year, end_year = (int(value) for value in year_range.split('-', 1))
+            if start_year > end_year:
+                raise ValueError
+            parsed_year_range = (start_year, end_year)
+        except ValueError:
+            raise click.BadParameter('must use START-END with START <= END, e.g. 2018-2025', param_hint='--year-range')
+    parsed_forms = [value.strip().upper() for value in forms.split(',') if value.strip()] if forms else None
+    if forms is not None and not parsed_forms:
+        raise click.BadParameter('must contain at least one SEC form', param_hint='--forms')
     click.echo(f"🌐 Streaming SEC company list: {csv_path}")
-    asyncio.run(process_sec_edgar_csv_stream(csv_path))
+    asyncio.run(process_sec_edgar_csv_stream(csv_path, parsed_year_range, parsed_forms))
     click.echo("✨ SEC streaming task successfully closed out.")
 
 @main.command()

@@ -195,8 +195,12 @@ The command fetches each primary HTML document, stores it under `--download-dir`
 To stream the same filings directly into the database without writing HTML files locally, use:
 
 ```bash
-fin-pipeline sec-edgar-stream ./companies.csv
+fin-pipeline sec-edgar-stream ./companies.csv \
+   --year-range 2018-2025 \
+   --forms 10-K,10-Q
 ```
+
+`--year-range` is inclusive. The example searches 2018 through 2025. `--forms` accepts comma-separated SEC forms. These CLI options override `year` and `forms` values in the CSV rows; when omitted, row-level filters are used.
 
 Streaming still processes one filing at a time and stores extracted text, tables, metadata, and hashes in SurrealDB. The raw HTML remains in memory only, so a failed filing must be fetched again when retried.
 

@@ -46,7 +46,11 @@ def _max_filings(row: dict) -> int | None:
     return int(value) if value else None
 
 
-def _stream_filings_from_csv(csv_path: str) -> Iterator[tuple[str, dict]]:
+def _stream_filings_from_csv(
+    csv_path: str,
+    year_range: tuple[int, int] | None = None,
+    forms: list[str] | None = None,
+) -> Iterator[tuple[str, dict]]:
     """Fetch primary HTML documents and yield their content and metadata."""
     if not (os.getenv("EDGAR_IDENTITY") or EDGAR_IDENTITY):
         raise RuntimeError(
@@ -61,10 +65,15 @@ def _stream_filings_from_csv(csv_path: str) -> Iterator[tuple[str, dict]]:
         identifier = row.get("cik") or row.get("ticker")
         company = Company(identifier)
         ticker = row.get("ticker") or company.get_ticker() or f"CIK{str(company.cik).zfill(10)}"
-        forms = _forms(row)
+        requested_forms = forms if forms is not None else _forms(row)
+        requested_years = (
+            list(range(year_range[0], year_range[1] + 1))
+            if year_range
+            else _year(row)
+        )
         filings = company.get_filings(
-            form=forms,
-            year=_year(row),
+            form=requested_forms,
+            year=requested_years,
             amendments=False,
             trigger_full_load=True,
         )
@@ -100,6 +109,10 @@ def fetch_filings_from_csv(csv_path: str, download_dir: str) -> Iterator[tuple[P
         yield file_path, metadata
 
 
-def stream_filings_from_csv(csv_path: str) -> Iterator[tuple[str, dict]]:
+def stream_filings_from_csv(
+    csv_path: str,
+    year_range: tuple[int, int] | None = None,
+    forms: list[str] | None = None,
+) -> Iterator[tuple[str, dict]]:
     """Yield SEC primary HTML content and metadata without writing to disk."""
-    return _stream_filings_from_csv(csv_path)
+    return _stream_filings_from_csv(csv_path, year_range=year_range, forms=forms)
