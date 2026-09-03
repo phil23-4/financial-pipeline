@@ -266,7 +266,7 @@ def initialize_schema() -> bool:
     Idempotent — uses ``IF NOT EXISTS`` so it can be re-run safely.
     """
     schema_sql = _build_schema_sql()
-    log("Initializing SurrealDB schema (SCHEMAFULL + indexes)...")
+    log(f"Initializing SurrealDB schema for namespace={SURREAL_NS}, database={SURREAL_DB}, endpoint={SURREAL_ENDPOINT} (SCHEMAFULL + indexes)...")
     result = surreal_query(schema_sql, timeout=60)
     if isinstance(result, dict) and result.get("error"):
         log(f"  Schema init warning: {result['error'][:300]}")
@@ -276,6 +276,12 @@ def initialize_schema() -> bool:
         log(f"  Graph edges enabled (company table: {COMPANY_TABLE})")
     else:
         log("  Graph edges disabled (set COMPANY_TABLE to enable)")
+
+    if SURREAL_NS != "finance" or SURREAL_DB != "analytics":
+        log(
+            "  Warning: expected SurrealDB namespace/database to be 'finance/analytics' "
+            f"but configuration is '{SURREAL_NS}/{SURREAL_DB}'"
+        )
 
     # Migration: remove deprecated documentContent field
     mig_result = surreal_query(
