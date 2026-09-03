@@ -14,16 +14,20 @@ except ImportError:
         stacklevel=1,
     )
 
-def find_project_root(starting_path: Path, markers=("pyproject.toml", ".git", "setup.py")) -> Path:
+
+def find_project_root(
+    starting_path: Path, markers=("pyproject.toml", ".git", "setup.py")
+) -> Path:
     """Find the project root by searching upward for marker files, falling back to package root depth."""
     for parent in starting_path.parents:
         if any((parent / marker).exists() for marker in markers):
             return parent
-    
+
     # Fallback to repository root relative to src/fin_pipeline/config/ settings location
     if len(starting_path.parents) >= 3:
         return starting_path.parents[3]
     return starting_path.parent
+
 
 project_root = find_project_root(Path(__file__).resolve())
 
@@ -40,9 +44,11 @@ if dotenv_values:
             stacklevel=1,
         )
 
+
 def get_env(key: str, default: str = "") -> str:
     """Retrieve configuration, giving system OS variables precedence over .env file values."""
     return os.getenv(key, env_values.get(key, default))
+
 
 DB_ENDPOINT = get_env("SURREAL_ENDPOINT", "http://127.0.0.1:8000")
 DB_USER = get_env("SURREAL_USER", "root")
@@ -62,6 +68,7 @@ SURREAL_DB = DB_DB
 # Points to existing log/ folder in project root
 LOG_DIR = project_root / "log"
 
+
 def get_log_dir() -> Path:
     """Ensure log directory exists, falling back to a temp directory if primary path is unwriteable."""
     try:
@@ -77,10 +84,13 @@ def get_log_dir() -> Path:
         )
         return fallback_dir
 
+
 # Immutable configuration dictionary
-DB_AUTH = MappingProxyType({
-    "user": DB_USER,
-    "pass": DB_PASS,
-    "namespace": DB_NS,
-    "database": DB_DB,
-})
+DB_AUTH = MappingProxyType(
+    {
+        "user": DB_USER,
+        "pass": DB_PASS,
+        "namespace": DB_NS,
+        "database": DB_DB,
+    }
+)

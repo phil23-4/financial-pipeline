@@ -69,7 +69,9 @@ def _normalize_filing_type(filing_type: str) -> str:
 
 def _detect_exchange_from_text(text: str) -> Optional[str]:
     text_lower = text.lower()
-    for name, normalized in sorted(EXCHANGE_MAPPING.items(), key=lambda item: len(item[0]), reverse=True):
+    for name, normalized in sorted(
+        EXCHANGE_MAPPING.items(), key=lambda item: len(item[0]), reverse=True
+    ):
         if re.search(rf"(?<!\w){re.escape(name.lower())}(?!\w)", text_lower):
             return normalized
     return None
@@ -104,7 +106,9 @@ def extract_metadata_from_text(text: str, source: str) -> Dict[str, Any]:
     filing_match = FILING_TYPE_PATTERN.search(text)
     if filing_match:
         filing_value = filing_match.group(1)
-        _set_candidate(candidates, "filingType", _normalize_filing_type(filing_value), source, 0.86)
+        _set_candidate(
+            candidates, "filingType", _normalize_filing_type(filing_value), source, 0.86
+        )
 
     date_match = DATE_PATTERN.search(text)
     if date_match:
@@ -162,5 +166,11 @@ def merge_metadata_candidates(candidates: Dict[str, Dict[str, Any]]) -> Dict[str
     return result
 
 
-def set_field_candidate(candidates: Dict[str, Dict[str, Any]], field: str, value: Optional[str], source: str, confidence: float) -> None:
+def set_field_candidate(
+    candidates: Dict[str, Dict[str, Any]],
+    field: str,
+    value: Optional[str],
+    source: str,
+    confidence: float,
+) -> None:
     _set_candidate(candidates, field, value, source, confidence)

@@ -6,7 +6,6 @@ from fin_pipeline.config.settings import DB_ENDPOINT, DB_AUTH
 from fin_pipeline.db.db import initialize_schema, surreal_query, surreal_rpc
 from fin_pipeline.utils.db_utils import quote_record_id
 
-
 # SurrealDB's /sql endpoint has a smaller request limit than /rpc.
 _SQL_UPSERT_LIMIT_BYTES = 900_000
 
@@ -20,9 +19,6 @@ def _raise_for_query_error(response):
             if isinstance(result, dict) and result.get("status") == "ERR":
                 raise RuntimeError(str(result.get("result", "Unknown query error")))
     return response
-
-
-
 
 
 def _prune_none_values(value):
@@ -67,14 +63,19 @@ def _surrealql_literal(value):
         utc_dt = value.astimezone(timezone.utc)
         return f"d'{utc_dt.strftime('%Y-%m-%dT%H:%M:%SZ')}'"
     if isinstance(value, str):
-        iso_like = re.match(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$", value)
+        iso_like = re.match(
+            r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$",
+            value,
+        )
         if iso_like:
             return f"d'{value}'"
         return json.dumps(value, ensure_ascii=False)
     if isinstance(value, list):
         return "[" + ", ".join(_surrealql_literal(item) for item in value) + "]"
     if isinstance(value, dict):
-        inner = ", ".join(f"{key}: {_surrealql_literal(val)}" for key, val in value.items())
+        inner = ", ".join(
+            f"{key}: {_surrealql_literal(val)}" for key, val in value.items()
+        )
         return "{" + inner + "}"
     return json.dumps(value, ensure_ascii=False)
 
@@ -149,12 +150,13 @@ class SurrealConnection:
 
 class SurrealPooledConnection:
     """Async Context Manager that uses a pooled SurrealDB connection for better performance.
-    
+
     Recommended for high-concurrency scenarios to reuse connections across requests.
     """
 
     def __init__(self):
         from fin_pipeline.db.connection_pool import SurrealConnectionPool
+
         self.pool = SurrealConnectionPool()
         self.db = None
 
@@ -166,4 +168,3 @@ class SurrealPooledConnection:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.db:
             await self.db.close()
-

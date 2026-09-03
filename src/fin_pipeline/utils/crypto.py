@@ -1,5 +1,6 @@
 import hashlib
 
+
 def calculate_file_hash(file_path: str) -> str:
     """Generates deterministic SHA256 hashes used to prevent duplicate entries inside database tables."""
     sha256 = hashlib.sha256()

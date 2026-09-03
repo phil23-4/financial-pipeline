@@ -2,12 +2,13 @@ import pytesseract
 from pdf2image import convert_from_path
 from loguru import logger as log
 
+
 def extract_text_via_ocr(file_path: str) -> str:
     """Transforms unparsed scanned image pages into string buffers via OCR processing loops.
-    
+
     Args:
         file_path: Path to PDF file
-        
+
     Returns:
         Concatenated OCR text from all pages, with empty strings for failed pages
     """

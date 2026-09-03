@@ -33,7 +33,11 @@ def read_company_csv(csv_path: str) -> Iterator[dict]:
 
 def _forms(row: dict) -> list[str] | None:
     value = row.get("forms") or row.get("form")
-    return [item.strip().upper() for item in value.split(",") if item.strip()] or None if value else None
+    return (
+        [item.strip().upper() for item in value.split(",") if item.strip()] or None
+        if value
+        else None
+    )
 
 
 def _year(row: dict) -> int | None:
@@ -64,12 +68,14 @@ def _stream_filings_from_csv(
     for row in read_company_csv(csv_path):
         identifier = row.get("cik") or row.get("ticker")
         company = Company(identifier)
-        ticker = row.get("ticker") or company.get_ticker() or f"CIK{str(company.cik).zfill(10)}"
+        ticker = (
+            row.get("ticker")
+            or company.get_ticker()
+            or f"CIK{str(company.cik).zfill(10)}"
+        )
         requested_forms = forms if forms is not None else _forms(row)
         requested_years = (
-            list(range(year_range[0], year_range[1] + 1))
-            if year_range
-            else _year(row)
+            list(range(year_range[0], year_range[1] + 1)) if year_range else _year(row)
         )
         filings = company.get_filings(
             form=requested_forms,
@@ -92,19 +98,25 @@ def _stream_filings_from_csv(
                 "exchange": "UNKNOWN",
                 "filingType": filing.form,
                 "stockName": filing.company,
-                "filingDate": getattr(filing, "report_date", None) or filing.filing_date,
+                "filingDate": getattr(filing, "report_date", None)
+                or filing.filing_date,
                 "referencedTickers": [],
                 "cik": str(filing.cik).zfill(10),
             }
             yield html_content, metadata
 
 
-def fetch_filings_from_csv(csv_path: str, download_dir: str) -> Iterator[tuple[Path, dict]]:
+def fetch_filings_from_csv(
+    csv_path: str, download_dir: str
+) -> Iterator[tuple[Path, dict]]:
     """Fetch primary HTML documents and yield locally saved file/metadata pairs."""
     destination = Path(download_dir)
     destination.mkdir(parents=True, exist_ok=True)
     for html_content, metadata in _stream_filings_from_csv(csv_path):
-        file_path = destination / f"{metadata['companyTicker']}_{metadata['filingId'].removeprefix('sec_').removeprefix(metadata['companyTicker'] + '_')}_primary.html"
+        file_path = (
+            destination
+            / f"{metadata['companyTicker']}_{metadata['filingId'].removeprefix('sec_').removeprefix(metadata['companyTicker'] + '_')}_primary.html"
+        )
         file_path.write_text(html_content, encoding="utf-8")
         yield file_path, metadata
 

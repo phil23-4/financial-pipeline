@@ -7,7 +7,11 @@ from typing import Any, Dict, List
 from bs4 import BeautifulSoup
 
 from fin_pipeline.config.constants import EXCHANGE_MAPPING
-from fin_pipeline.utils.metadata import _normalize_html_date, merge_metadata_candidates, set_field_candidate
+from fin_pipeline.utils.metadata import (
+    _normalize_html_date,
+    merge_metadata_candidates,
+    set_field_candidate,
+)
 
 
 def _ixbrl_value(soup: BeautifulSoup, field_name: str) -> str | None:
@@ -22,7 +26,13 @@ def _ixbrl_value(soup: BeautifulSoup, field_name: str) -> str | None:
     return None
 
 
-def _candidate_value(field: str, value: str | None, source: str, confidence: float, candidates: Dict[str, Dict[str, Any]]) -> None:
+def _candidate_value(
+    field: str,
+    value: str | None,
+    source: str,
+    confidence: float,
+    candidates: Dict[str, Dict[str, Any]],
+) -> None:
     """Record the strongest discovered value for a metadata field."""
     if not value:
         return
@@ -41,7 +51,7 @@ def _candidate_value(field: str, value: str | None, source: str, confidence: flo
 
 def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
     """Extract company and reporting-period metadata from Inline XBRL HTML."""
-    soup = BeautifulSoup(html_content, 'html.parser')
+    soup = BeautifulSoup(html_content, "html.parser")
     candidates: Dict[str, Dict[str, Any]] = {}
 
     company_name = _ixbrl_value(soup, "EntityRegistrantName")
@@ -52,7 +62,9 @@ def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
     if filing_date:
         parsed_date = _normalize_html_date(filing_date)
         if parsed_date:
-            set_field_candidate(candidates, "filingDate", parsed_date, "html_ixbrl", 0.94)
+            set_field_candidate(
+                candidates, "filingDate", parsed_date, "html_ixbrl", 0.94
+            )
 
     filing_type = _ixbrl_value(soup, "DocumentType")
     if filing_type:
@@ -64,7 +76,11 @@ def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
 
     visible_text = soup.get_text(" ", strip=True).lower()
     exchange = next(
-        (normalized for name, normalized in EXCHANGE_MAPPING.items() if name in visible_text),
+        (
+            normalized
+            for name, normalized in EXCHANGE_MAPPING.items()
+            if name in visible_text
+        ),
         None,
     )
     if exchange:
@@ -114,77 +130,85 @@ def enrich_filing_metadata_with_edgartools(
                 for attribute in attributes:
                     value = getattr(filing, attribute, None)
                     if value:
-                        enriched[key] = value.isoformat() if hasattr(value, "isoformat") else str(value)
+                        enriched[key] = (
+                            value.isoformat()
+                            if hasattr(value, "isoformat")
+                            else str(value)
+                        )
                         break
         return enriched
     except Exception:
         return metadata
 
+
 def extract_text_from_html(html_content: str) -> str:
     """Extract plain text from HTML content, removing scripts and styles."""
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
+    soup = BeautifulSoup(html_content, "html.parser")
+
     # Remove script and style elements
     for script in soup(["script", "style"]):
         script.decompose()
-    
+
     # Get text
     text = soup.get_text()
-    
+
     # Clean up whitespace
     lines = (line.strip() for line in text.splitlines())
     chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-    text = '\n'.join(chunk for chunk in chunks if chunk)
-    
+    text = "\n".join(chunk for chunk in chunks if chunk)
+
     return text
+
 
 def extract_tables_from_html(html_content: str) -> tuple:
     """Extract HTML tables and convert to markdown format.
-    
+
     Returns:
         tuple: (tables_list, table_count, extraction_reason)
     """
-    soup = BeautifulSoup(html_content, 'html.parser')
-    tables = soup.find_all('table')
-    
+    soup = BeautifulSoup(html_content, "html.parser")
+    tables = soup.find_all("table")
+
     extracted_tables = []
     for table_idx, table in enumerate(tables):
         try:
-            rows = table.find_all('tr')
+            rows = table.find_all("tr")
             if not rows:
                 continue
-            
+
             # Extract headers
             headers = []
-            first_row_cells = rows[0].find_all(['th', 'td'])
+            first_row_cells = rows[0].find_all(["th", "td"])
             for cell in first_row_cells:
                 headers.append(cell.get_text(strip=True))
-            
+
             # Extract data rows
             markdown_lines = []
             if headers:
-                markdown_lines.append('| ' + ' | '.join(headers) + ' |')
-                markdown_lines.append('|' + ''.join(['------|' for _ in headers]))
-            
+                markdown_lines.append("| " + " | ".join(headers) + " |")
+                markdown_lines.append("|" + "".join(["------|" for _ in headers]))
+
             for row in rows[1:]:
-                cells = row.find_all(['td', 'th'])
+                cells = row.find_all(["td", "th"])
                 if cells:
                     row_data = [cell.get_text(strip=True) for cell in cells]
-                    markdown_lines.append('| ' + ' | '.join(row_data) + ' |')
-            
-            markdown_table = '\n'.join(markdown_lines)
-            
-            extracted_tables.append({
-                "tableIndex": table_idx,
-                "sheetName": None,
-                "pageNumber": None,
-                "headers": headers,
-                "rowCount": len(rows) - 1,
-                "markdown": markdown_table
-            })
+                    markdown_lines.append("| " + " | ".join(row_data) + " |")
+
+            markdown_table = "\n".join(markdown_lines)
+
+            extracted_tables.append(
+                {
+                    "tableIndex": table_idx,
+                    "sheetName": None,
+                    "pageNumber": None,
+                    "headers": headers,
+                    "rowCount": len(rows) - 1,
+                    "markdown": markdown_table,
+                }
+            )
         except Exception as e:
             pass
-    
+
     return extracted_tables, len(extracted_tables), "html_beautifulsoup"
 
 
@@ -200,39 +224,40 @@ def parse_html_content(html_content: str) -> Dict[str, Any]:
         **extract_filing_metadata(html_content),
     }
 
+
 def parse_html_file(file_path: str) -> Dict[str, Any]:
     """Parse an HTML SEC Edgar filing and extract text and tables.
-    
+
     Args:
         file_path: Path to HTML file
-    
+
     Returns:
         Dictionary with extracted content and metadata
     """
     if not os.path.exists(file_path):
-        return {
-            "text": "",
-            "tables": [],
-            "table_cnt": 0,
-            "reason": "File not found"
-        }
-    
+        return {"text": "", "tables": [], "table_cnt": 0, "reason": "File not found"}
+
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             html_content = f.read()
     except UnicodeDecodeError:
         # Try alternative encoding
-        with open(file_path, 'r', encoding='latin-1') as f:
+        with open(file_path, "r", encoding="latin-1") as f:
             html_content = f.read()
     except Exception as e:
         return {
             "text": "",
             "tables": [],
             "table_cnt": 0,
-            "reason": f"Read error: {str(e)}"
+            "reason": f"Read error: {str(e)}",
         }
-    
+
     try:
         return parse_html_content(html_content)
     except Exception as e:
-        return {"text": "", "tables": [], "table_cnt": 0, "reason": f"Parse error: {str(e)}"}
+        return {
+            "text": "",
+            "tables": [],
+            "table_cnt": 0,
+            "reason": f"Parse error: {str(e)}",
+        }

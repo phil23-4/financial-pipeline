@@ -28,9 +28,11 @@ def log(message: str) -> None:
     """Small compatibility helper that routes messages through Loguru."""
     logger.info(message)
 
+
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
+
 
 def _get_auth_header() -> str:
     creds = f"{SURREAL_USER}:{SURREAL_PASS}".encode()
@@ -41,6 +43,7 @@ def _get_auth_header() -> str:
 # Query
 # ---------------------------------------------------------------------------
 
+
 @retry_with_backoff(
     max_attempts=3,
     initial_delay=1.0,
@@ -49,7 +52,7 @@ def _get_auth_header() -> str:
 )
 def surreal_query(sql: str, timeout: int = 120) -> dict:
     """Send SurrealQL to the ``/sql`` endpoint. Returns parsed JSON response.
-    
+
     Automatically retries on network errors with exponential backoff.
     """
     url = f"{SURREAL_ENDPOINT}/sql"
@@ -144,6 +147,7 @@ def surreal_rpc(method: str, params: list, timeout: int = 120) -> dict:
 # Batch upsert with binary-split retry
 # ---------------------------------------------------------------------------
 
+
 def upsert_batch_with_retry(
     statements: List[str], depth: int = 0, max_depth: int = 6
 ) -> int:
@@ -158,7 +162,9 @@ def upsert_batch_with_retry(
     if isinstance(res, dict) and res.get("error"):
         if depth >= max_depth or len(statements) == 1:
             err_txt = res.get("error", "")
-            log(f"  Batch failed (depth {depth}, size {len(statements)}): {err_txt[:300]}")
+            log(
+                f"  Batch failed (depth {depth}, size {len(statements)}): {err_txt[:300]}"
+            )
             try:
                 LOG_DIR.mkdir(exist_ok=True)
                 with open(LOG_DIR / "hkex_failed.sql", "a", encoding="utf-8") as fh:
@@ -182,6 +188,7 @@ def upsert_batch_with_retry(
 # ---------------------------------------------------------------------------
 # Schema initialisation
 # ---------------------------------------------------------------------------
+
 
 def _build_schema_sql() -> str:
     """Return the full schema DDL, dynamically including graph edges if COMPANY_TABLE is set."""
@@ -266,7 +273,9 @@ def initialize_schema() -> bool:
     Idempotent — uses ``IF NOT EXISTS`` so it can be re-run safely.
     """
     schema_sql = _build_schema_sql()
-    log(f"Initializing SurrealDB schema for namespace={SURREAL_NS}, database={SURREAL_DB}, endpoint={SURREAL_ENDPOINT} (SCHEMAFULL + indexes)...")
+    log(
+        f"Initializing SurrealDB schema for namespace={SURREAL_NS}, database={SURREAL_DB}, endpoint={SURREAL_ENDPOINT} (SCHEMAFULL + indexes)..."
+    )
     result = surreal_query(schema_sql, timeout=60)
     if isinstance(result, dict) and result.get("error"):
         log(f"  Schema init warning: {result['error'][:300]}")
@@ -305,9 +314,13 @@ def initialize_schema() -> bool:
             timeout=30,
         )
         if isinstance(relation_migration, dict) and relation_migration.get("error"):
-            log(f"  Relation metadata migration warning: {relation_migration['error'][:200]}")
+            log(
+                f"  Relation metadata migration warning: {relation_migration['error'][:200]}"
+            )
         else:
-            log("  Migration: graph relation timestamps made optional for bare RELATE compatibility")
+            log(
+                "  Migration: graph relation timestamps made optional for bare RELATE compatibility"
+            )
 
     metadata_migration = surreal_query(
         "REMOVE FIELD IF EXISTS metadataSources ON TABLE exchange_filing;"
@@ -317,7 +330,11 @@ def initialize_schema() -> bool:
         timeout=30,
     )
     if isinstance(metadata_migration, dict) and metadata_migration.get("error"):
-        log(f"  Metadata provenance migration warning: {metadata_migration['error'][:200]}")
+        log(
+            f"  Metadata provenance migration warning: {metadata_migration['error'][:200]}"
+        )
     else:
-        log("  Migration: metadata provenance and confidence fields ensured as JSON strings")
+        log(
+            "  Migration: metadata provenance and confidence fields ensured as JSON strings"
+        )
     return True

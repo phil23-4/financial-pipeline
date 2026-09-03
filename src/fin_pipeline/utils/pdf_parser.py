@@ -4,7 +4,11 @@ from typing import Any, Dict, Optional
 
 from pypdf import PdfReader
 
-from fin_pipeline.utils.metadata import extract_metadata_from_text, merge_metadata_candidates, set_field_candidate
+from fin_pipeline.utils.metadata import (
+    extract_metadata_from_text,
+    merge_metadata_candidates,
+    set_field_candidate,
+)
 from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
 
 
@@ -39,7 +43,9 @@ def _update_candidate_metadata(
         }
 
 
-def _extract_pdf_metadata_from_properties(reader: PdfReader) -> Dict[str, Optional[str]]:
+def _extract_pdf_metadata_from_properties(
+    reader: PdfReader,
+) -> Dict[str, Optional[str]]:
     """Extract metadata from PDF document properties.
 
     Attempts to read metadata embedded by the PDF creator.
@@ -59,7 +65,9 @@ def _extract_pdf_metadata_from_properties(reader: PdfReader) -> Dict[str, Option
         return {}
 
 
-def extract_filing_metadata(text: str, reader: Optional[PdfReader] = None) -> Dict[str, Any]:
+def extract_filing_metadata(
+    text: str, reader: Optional[PdfReader] = None
+) -> Dict[str, Any]:
     """Extract company and reporting-period metadata from PDF.
 
     Attempts multiple extraction strategies with confidence tracking so callers can
@@ -70,19 +78,39 @@ def extract_filing_metadata(text: str, reader: Optional[PdfReader] = None) -> Di
     if reader:
         props = _extract_pdf_metadata_from_properties(reader)
         if props.get("title"):
-            set_field_candidate(candidate_map, "stockName", props["title"], "pdf_properties", 0.88)
+            set_field_candidate(
+                candidate_map, "stockName", props["title"], "pdf_properties", 0.88
+            )
         if props.get("subject"):
-            set_field_candidate(candidate_map, "filingType", props["subject"], "pdf_properties", 0.82)
+            set_field_candidate(
+                candidate_map, "filingType", props["subject"], "pdf_properties", 0.82
+            )
         if props.get("keywords"):
-            set_field_candidate(candidate_map, "exchange", props["keywords"], "pdf_properties", 0.72)
+            set_field_candidate(
+                candidate_map, "exchange", props["keywords"], "pdf_properties", 0.72
+            )
 
     text_metadata = extract_metadata_from_text(text, "pdf_text_regex")
-    for field in ["stockName", "filingDate", "filingType", "exchange", "cik", "lei", "isin", "cusip", "sedol"]:
+    for field in [
+        "stockName",
+        "filingDate",
+        "filingType",
+        "exchange",
+        "cik",
+        "lei",
+        "isin",
+        "cusip",
+        "sedol",
+    ]:
         if field in text_metadata and text_metadata[field] is not None:
             candidate_map[field] = {
                 "value": text_metadata[field],
-                "source": text_metadata.get("metadataSources", {}).get(field, "pdf_text_regex"),
-                "confidence": text_metadata.get("metadataConfidence", {}).get(field, 0.8),
+                "source": text_metadata.get("metadataSources", {}).get(
+                    field, "pdf_text_regex"
+                ),
+                "confidence": text_metadata.get("metadataConfidence", {}).get(
+                    field, 0.8
+                ),
             }
 
     result: Dict[str, Any] = {
@@ -120,29 +148,28 @@ def parse_pdf_layout(file_path: str) -> dict:
     reader = PdfReader(file_path)
 
     # extract_text() may return None for scanned or malformed pages.
-    is_digital = any(
-        (page.extract_text() or "").strip()
-        for page in reader.pages[:2]
-    )
+    is_digital = any((page.extract_text() or "").strip() for page in reader.pages[:2])
 
     if is_digital:
         with pdfplumber.open(file_path) as pdf:
             for page_num, page in enumerate(pdf.pages, start=1):
                 text = page.extract_text()
-                if text: extracted_text.append(text)
+                if text:
+                    extracted_text.append(text)
 
                 # Two-pass extraction: Attempt default grid extraction first;
                 # fallback to 'text' strategy for borderless/stylized annual report tables
                 tables = page.extract_tables()
                 if not tables:
-                    tables = page.extract_tables({
-                        "vertical_strategy": "text",
-                        "horizontal_strategy": "text"
-                    })
+                    tables = page.extract_tables(
+                        {"vertical_strategy": "text", "horizontal_strategy": "text"}
+                    )
 
-                for table in (tables or []):
+                for table in tables or []:
                     # Filter out empty or broken table structures safely
-                    valid_rows = [r for r in table if r and any(cell is not None for cell in r)]
+                    valid_rows = [
+                        r for r in table if r and any(cell is not None for cell in r)
+                    ]
                     if not valid_rows:
                         continue
 
@@ -151,20 +178,29 @@ def parse_pdf_layout(file_path: str) -> dict:
                     headers = [str(c).strip() if c else "" for c in valid_rows[0]]
 
                     rows = [
-                        "| " + " | ".join([str(cell).replace("\n", " ").strip() if cell else "" for cell in r]) + " |"
+                        "| "
+                        + " | ".join(
+                            [
+                                str(cell).replace("\n", " ").strip() if cell else ""
+                                for cell in r
+                            ]
+                        )
+                        + " |"
                         for r in valid_rows
                     ]
 
                     # Insert Markdown table delimiter row safely
                     rows.insert(1, "| " + " | ".join(["---"] * num_cols) + " |")
 
-                    extracted_tables.append({
-                        "tableIndex": table_cnt,
-                        "pageNumber": page_num,
-                        "headers": headers,
-                        "rowCount": len(valid_rows) - 1,
-                        "markdown": "\n".join(rows)
-                    })
+                    extracted_tables.append(
+                        {
+                            "tableIndex": table_cnt,
+                            "pageNumber": page_num,
+                            "headers": headers,
+                            "rowCount": len(valid_rows) - 1,
+                            "markdown": "\n".join(rows),
+                        }
+                    )
                     table_cnt += 1
 
         full_text = "\n".join(extracted_text)

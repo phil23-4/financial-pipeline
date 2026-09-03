@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
+
 class DocumentTableSchema(BaseModel):
     tableIndex: Optional[int] = None
     sheetName: Optional[str] = None
@@ -9,6 +10,7 @@ class DocumentTableSchema(BaseModel):
     headers: Optional[List[str]] = None
     rowCount: Optional[int] = None
     markdown: Optional[str] = None
+
 
 class ExchangeFilingModel(BaseModel):
     filingId: str
@@ -23,7 +25,11 @@ class ExchangeFilingModel(BaseModel):
     filingDate: Optional[str] = None
     documentUrl: Optional[str] = None
     source: str
-    updatedAt: str = Field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    updatedAt: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    )
     referencedTickers: Optional[List[str]] = Field(default_factory=list)
     documentSize: Optional[int] = None
     documentType: Optional[str] = "PDF"
