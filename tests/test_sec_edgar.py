@@ -11,12 +11,14 @@ def test_read_company_csv_normalizes_rows(tmp_path):
     csv_path = tmp_path / "companies.csv"
     csv_path.write_text("ticker,forms,year,max_filings\nAAPL,10-K,2024,2\n")
 
-    assert list(read_company_csv(str(csv_path))) == [{
-        "ticker": "AAPL",
-        "forms": "10-K",
-        "year": "2024",
-        "max_filings": "2",
-    }]
+    assert list(read_company_csv(str(csv_path))) == [
+        {
+            "ticker": "AAPL",
+            "forms": "10-K",
+            "year": "2024",
+            "max_filings": "2",
+        }
+    ]
 
 
 def test_read_company_csv_requires_ticker_or_cik(tmp_path):
@@ -49,9 +51,11 @@ def test_stream_filters_override_csv_filters(tmp_path, monkeypatch):
     monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
 
     with patch.dict("sys.modules", {"edgar": fake_edgar}):
-        results = list(stream_filings_from_csv(
-            str(csv_path), year_range=(2018, 2025), forms=["10-K", "10-Q"]
-        ))
+        results = list(
+            stream_filings_from_csv(
+                str(csv_path), year_range=(2018, 2025), forms=["10-K", "10-Q"]
+            )
+        )
 
     company.get_filings.assert_called_once_with(
         form=["10-K", "10-Q"],
@@ -66,9 +70,9 @@ def test_stream_cli_rejects_reversed_year_range(tmp_path):
     csv_path = tmp_path / "companies.csv"
     csv_path.write_text("ticker\nAAPL\n")
 
-    result = CliRunner().invoke(main, [
-        "sec-edgar-stream", str(csv_path), "--year-range", "2025-2018"
-    ])
+    result = CliRunner().invoke(
+        main, ["sec-edgar-stream", str(csv_path), "--year-range", "2025-2018"]
+    )
 
     assert result.exit_code != 0
     assert "START <= END" in result.output

@@ -8,26 +8,32 @@ from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.pipeline import run_ingestion_pipeline, run_html_content_pipeline
 from fin_pipeline.utils.html_parser import extract_filing_metadata
 
+
 @pytest.mark.asyncio
 @patch("fin_pipeline.pipeline.parse_pdf_layout")
 @patch("fin_pipeline.pipeline.SurrealConnection")
 @patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
 async def test_successful_pipeline_ingestion(
-    mock_graph_rel,
-    mock_surreal_conn,
-    mock_pdf_parser,
-    sample_pdf_path
+    mock_graph_rel, mock_surreal_conn, mock_pdf_parser, sample_pdf_path
 ):
     """Tests an end-to-end ingestion pass with fully mocked data layers."""
-    
+
     # 1. Setup mock returns for the PDF parser engine
     mock_pdf_parser.return_value = {
         "text": "Sample financial document text layer",
-        "tables": [{"tableIndex": 0, "pageNumber": 1, "headers": ["Asset", "Value"], "rowCount": 1, "markdown": "| A | B |"}],
+        "tables": [
+            {
+                "tableIndex": 0,
+                "pageNumber": 1,
+                "headers": ["Asset", "Value"],
+                "rowCount": 1,
+                "markdown": "| A | B |",
+            }
+        ],
         "table_cnt": 1,
-        "reason": "Digital Native"
+        "reason": "Digital Native",
     }
-    
+
     # 2. Mock the async database context manager behavior
     mock_db_instance = AsyncMock()
     mock_surreal_conn.return_value.__aenter__.return_value = mock_db_instance
@@ -39,7 +45,7 @@ async def test_successful_pipeline_ingestion(
         "stockCode": "9999",
         "exchange": "LSE",
         "filingType": "10-K",
-        "referencedTickers": ["AAPL"]
+        "referencedTickers": ["AAPL"],
     }
 
     # 4. Trigger structural function engine node logic
@@ -48,12 +54,12 @@ async def test_successful_pipeline_ingestion(
     # 5. Assertions: Verify database update statement was made correctly
     mock_db_instance.upsert.assert_called_once()
     called_id, called_payload = mock_db_instance.upsert.call_args[0]
-    
+
     assert called_id == "exchange_filing:test_filing_123"
     assert called_payload["companyTicker"] == "XYZ"
     assert called_payload["documentStatus"] == "PROCESSED"
     assert called_payload["documentTableCnt"] == 1
-    
+
     # Verify graph edge constructor call was dispatched safely
     mock_graph_rel.assert_called_once()
 
@@ -128,9 +134,14 @@ async def test_html_content_pipeline_ingests_without_file(
     mock_graph_rel.assert_awaited_once()
 
 
-@pytest.mark.parametrize("date_text", ["December 31, 2019", "December 31 , 2019", "December\u00a031,\u00a02019"])
+@pytest.mark.parametrize(
+    "date_text",
+    ["December 31, 2019", "December 31 , 2019", "December\u00a031,\u00a02019"],
+)
 def test_extract_filing_metadata_accepts_sec_date_spacing(date_text):
-    html = f'<ix:nonNumeric name="dei:DocumentPeriodEndDate">{date_text}</ix:nonNumeric>'
+    html = (
+        f'<ix:nonNumeric name="dei:DocumentPeriodEndDate">{date_text}</ix:nonNumeric>'
+    )
 
     assert extract_filing_metadata(html)["filingDate"] == "2019-12-31"
 
@@ -147,12 +158,14 @@ async def test_surreal_connection_uses_helper_adapter(mock_http_conn):
 
     mock_http_conn.assert_called_once()
     mock_db.connect.assert_awaited_once()
-    mock_db.signin.assert_awaited_once_with({
-        "user": "root",
-        "pass": "secret",
-        "namespace": "finance",
-        "database": "analytics",
-    })
+    mock_db.signin.assert_awaited_once_with(
+        {
+            "user": "root",
+            "pass": "secret",
+            "namespace": "finance",
+            "database": "analytics",
+        }
+    )
     mock_db.use.assert_awaited_once_with(namespace="finance", database="analytics")
     mock_db.close.assert_awaited_once()
 
@@ -163,13 +176,21 @@ def test_http_upsert_uses_upsert_statement():
         mock_surreal_query.return_value = {"result": [{"status": "OK"}]}
 
         async def run():
-            adapter = __import__("fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"])._HttpSurrealConnection()
+            adapter = __import__(
+                "fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"]
+            )._HttpSurrealConnection()
             await adapter.upsert(
                 "exchange_filing:test",
-                {"filingId": "test", "updatedAt": "2026-09-01T00:00:00Z", "sheetName": None, "documentTables": [{"sheetName": None, "headers": ["A"]}]}
+                {
+                    "filingId": "test",
+                    "updatedAt": "2026-09-01T00:00:00Z",
+                    "sheetName": None,
+                    "documentTables": [{"sheetName": None, "headers": ["A"]}],
+                },
             )
 
         import asyncio
+
         asyncio.run(run())
 
     mock_surreal_query.assert_called_once()
@@ -181,18 +202,27 @@ def test_http_upsert_uses_upsert_statement():
 
 def test_http_upsert_uses_rpc_for_large_documents():
     """Large HTML filings should bypass the smaller /sql request limit."""
-    with patch("fin_pipeline.db.connection.surreal_query") as mock_surreal_query, \
-         patch("fin_pipeline.db.connection.surreal_rpc") as mock_surreal_rpc:
+    with (
+        patch("fin_pipeline.db.connection.surreal_query") as mock_surreal_query,
+        patch("fin_pipeline.db.connection.surreal_rpc") as mock_surreal_rpc,
+    ):
         mock_surreal_rpc.return_value = {"result": [{"status": "OK"}]}
 
         async def run():
-            adapter = __import__("fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"])._HttpSurrealConnection()
+            adapter = __import__(
+                "fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"]
+            )._HttpSurrealConnection()
             await adapter.upsert(
                 "exchange_filing:large",
-                {"filingId": "large", "updatedAt": "2026-09-01T00:00:00Z", "documentText": "x" * 900_000},
+                {
+                    "filingId": "large",
+                    "updatedAt": "2026-09-01T00:00:00Z",
+                    "documentText": "x" * 900_000,
+                },
             )
 
         import asyncio
+
         asyncio.run(run())
 
     mock_surreal_query.assert_not_called()
@@ -211,10 +241,15 @@ def test_http_delete_record_removes_stale_partial_data():
         mock_surreal_query.return_value = {"result": [{"status": "OK"}]}
 
         async def run():
-            adapter = __import__("fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"])._HttpSurrealConnection()
+            adapter = __import__(
+                "fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"]
+            )._HttpSurrealConnection()
             await adapter.delete_record("exchange_filing:test")
 
         import asyncio
+
         asyncio.run(run())
 
-    mock_surreal_query.assert_called_once_with("DELETE exchange_filing:⟨test⟩;", timeout=60)
+    mock_surreal_query.assert_called_once_with(
+        "DELETE exchange_filing:⟨test⟩;", timeout=60
+    )

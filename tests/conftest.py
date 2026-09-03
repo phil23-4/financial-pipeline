@@ -1,5 +1,6 @@
 import pytest
 
+
 @pytest.fixture(autouse=True)
 def mock_settings_env(monkeypatch):
     """Enforces mock tracking environment variables so unit tests never hit live production setups."""
@@ -8,6 +9,7 @@ def mock_settings_env(monkeypatch):
     monkeypatch.setenv("SURREAL_PASS", "test_pass")
     monkeypatch.setenv("SURREAL_NAMESPACE", "test_ns")
     monkeypatch.setenv("SURREAL_DATABASE", "test_db")
+
 
 @pytest.fixture
 def sample_pdf_path(tmp_path):

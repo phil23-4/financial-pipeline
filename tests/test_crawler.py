@@ -1,9 +1,11 @@
 import pytest
 from fin_pipeline.crawler import scan_directory, scan_sec_edgar_html_directory
 
+
 def test_scan_directory_missing():
     with pytest.raises(NotADirectoryError):
         list(scan_directory("/invalid/target/null/path"))
+
 
 def test_scan_directory_with_mock_files(tmp_path):
     (tmp_path / "report_alpha.pdf").write_bytes(b"%PDF-1.4 data payload block")
