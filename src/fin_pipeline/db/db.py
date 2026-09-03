@@ -232,6 +232,8 @@ DEFINE FIELD IF NOT EXISTS documentTables[*].markdown    ON TABLE exchange_filin
 DEFINE FIELD IF NOT EXISTS documentTableCnt     ON TABLE exchange_filing TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS documentStatus       ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS documentStatusReason ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS metadataSources      ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS metadataConfidence   ON TABLE exchange_filing TYPE option<string>;
 
 -- Indexes
 DEFINE INDEX IF NOT EXISTS idx_ef_ticker    ON TABLE exchange_filing COLUMNS companyTicker;
@@ -300,4 +302,16 @@ def initialize_schema() -> bool:
             log(f"  Relation metadata migration warning: {relation_migration['error'][:200]}")
         else:
             log("  Migration: graph relation timestamps made optional for bare RELATE compatibility")
+
+    metadata_migration = surreal_query(
+        "REMOVE FIELD IF EXISTS metadataSources ON TABLE exchange_filing;"
+        "REMOVE FIELD IF EXISTS metadataConfidence ON TABLE exchange_filing;"
+        "DEFINE FIELD metadataSources ON TABLE exchange_filing TYPE option<string>;"
+        "DEFINE FIELD metadataConfidence ON TABLE exchange_filing TYPE option<string>;",
+        timeout=30,
+    )
+    if isinstance(metadata_migration, dict) and metadata_migration.get("error"):
+        log(f"  Metadata provenance migration warning: {metadata_migration['error'][:200]}")
+    else:
+        log("  Migration: metadata provenance and confidence fields ensured as JSON strings")
     return True

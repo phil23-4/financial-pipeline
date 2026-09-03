@@ -4,18 +4,7 @@ from typing import Any, Dict, Optional
 
 from pypdf import PdfReader
 
-from fin_pipeline.config.constants import (
-    CIK_PATTERN,
-    COMPANY_PATTERN,
-    CUSIP_PATTERN,
-    DATE_PATTERN,
-    EXCHANGE_MAPPING,
-    FILING_TYPE_PATTERN,
-    ISIN_PATTERN,
-    LEI_PATTERN,
-    SEDOL_PATTERN,
-    parse_extracted_date_str,
-)
+from fin_pipeline.utils.metadata import extract_metadata_from_text, merge_metadata_candidates, set_field_candidate
 from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
 
 
@@ -70,73 +59,6 @@ def _extract_pdf_metadata_from_properties(reader: PdfReader) -> Dict[str, Option
         return {}
 
 
-def _extract_filing_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
-    """Extract filing metadata using regex patterns from PDF text."""
-    metadata: Dict[str, Optional[str]] = {}
-
-    filing_match = FILING_TYPE_PATTERN.search(text)
-    if filing_match:
-        matched_str = filing_match.group(1)
-        metadata["filing_type"] = (
-            matched_str.title()
-            if "report" in matched_str.lower()
-            else matched_str.upper()
-        )
-
-    date_match = DATE_PATTERN.search(text)
-    if date_match:
-        parsed_date = parse_extracted_date_str(date_match.group(1))
-        if parsed_date:
-            metadata["filing_date"] = parsed_date
-
-    cik_match = CIK_PATTERN.search(text)
-    if cik_match:
-        metadata["cik"] = cik_match.group(1)
-
-    lei_match = LEI_PATTERN.search(text)
-    if lei_match:
-        metadata["lei"] = lei_match.group(1).upper()
-
-    isin_match = ISIN_PATTERN.search(text)
-    if isin_match:
-        metadata["isin"] = isin_match.group(1).upper()
-
-    cusip_match = CUSIP_PATTERN.search(text)
-    if cusip_match:
-        metadata["cusip"] = cusip_match.group(1).upper()
-
-    sedol_match = SEDOL_PATTERN.search(text)
-    if sedol_match:
-        metadata["sedol"] = sedol_match.group(1).upper()
-
-    company_match = COMPANY_PATTERN.search(text)
-    if company_match:
-        company_name = company_match.group(1).strip()
-        if 3 < len(company_name) < 200:
-            metadata["stock_name"] = company_name
-
-    text_lower = text.lower()
-    exchange = next(
-        (
-            normalized
-            for name, normalized in sorted(
-                EXCHANGE_MAPPING.items(),
-                key=lambda item: len(item[0]),
-                reverse=True,
-            )
-            if re.search(
-                rf"(?<!\w){re.escape(name.lower())}(?!\w)",
-                text_lower,
-            )
-        ),
-        None,
-    )
-    if exchange:
-        metadata["exchange"] = exchange
-
-    return metadata
-
-
 def extract_filing_metadata(text: str, reader: Optional[PdfReader] = None) -> Dict[str, Any]:
     """Extract company and reporting-period metadata from PDF.
 
@@ -148,31 +70,20 @@ def extract_filing_metadata(text: str, reader: Optional[PdfReader] = None) -> Di
     if reader:
         props = _extract_pdf_metadata_from_properties(reader)
         if props.get("title"):
-            _update_candidate_metadata(candidate_map, "stockName", props["title"], "pdf_properties", 0.88)
+            set_field_candidate(candidate_map, "stockName", props["title"], "pdf_properties", 0.88)
         if props.get("subject"):
-            _update_candidate_metadata(candidate_map, "filingType", props["subject"], "pdf_properties", 0.82)
+            set_field_candidate(candidate_map, "filingType", props["subject"], "pdf_properties", 0.82)
         if props.get("keywords"):
-            _update_candidate_metadata(candidate_map, "exchange", props["keywords"], "pdf_properties", 0.72)
+            set_field_candidate(candidate_map, "exchange", props["keywords"], "pdf_properties", 0.72)
 
-    text_metadata = _extract_filing_metadata_from_text(text)
-    if text_metadata.get("stock_name"):
-        _update_candidate_metadata(candidate_map, "stockName", text_metadata["stock_name"], "pdf_text_regex", 0.78)
-    if text_metadata.get("filing_date"):
-        _update_candidate_metadata(candidate_map, "filingDate", text_metadata["filing_date"], "pdf_text_regex", 0.84)
-    if text_metadata.get("filing_type"):
-        _update_candidate_metadata(candidate_map, "filingType", text_metadata["filing_type"], "pdf_text_regex", 0.86)
-    if text_metadata.get("exchange"):
-        _update_candidate_metadata(candidate_map, "exchange", text_metadata["exchange"], "pdf_text_regex", 0.8)
-    if text_metadata.get("cik"):
-        _update_candidate_metadata(candidate_map, "cik", text_metadata["cik"], "pdf_text_regex", 0.9)
-    if text_metadata.get("lei"):
-        _update_candidate_metadata(candidate_map, "lei", text_metadata["lei"], "pdf_text_regex", 0.82)
-    if text_metadata.get("isin"):
-        _update_candidate_metadata(candidate_map, "isin", text_metadata["isin"], "pdf_text_regex", 0.82)
-    if text_metadata.get("cusip"):
-        _update_candidate_metadata(candidate_map, "cusip", text_metadata["cusip"], "pdf_text_regex", 0.82)
-    if text_metadata.get("sedol"):
-        _update_candidate_metadata(candidate_map, "sedol", text_metadata["sedol"], "pdf_text_regex", 0.82)
+    text_metadata = extract_metadata_from_text(text, "pdf_text_regex")
+    for field in ["stockName", "filingDate", "filingType", "exchange", "cik", "lei", "isin", "cusip", "sedol"]:
+        if field in text_metadata and text_metadata[field] is not None:
+            candidate_map[field] = {
+                "value": text_metadata[field],
+                "source": text_metadata.get("metadataSources", {}).get(field, "pdf_text_regex"),
+                "confidence": text_metadata.get("metadataConfidence", {}).get(field, 0.8),
+            }
 
     result: Dict[str, Any] = {
         "stockName": None,
@@ -180,6 +91,10 @@ def extract_filing_metadata(text: str, reader: Optional[PdfReader] = None) -> Di
         "filingType": None,
         "exchange": None,
         "cik": None,
+        "lei": None,
+        "isin": None,
+        "cusip": None,
+        "sedol": None,
     }
     metadata_sources: Dict[str, str] = {}
     metadata_confidence: Dict[str, float] = {}

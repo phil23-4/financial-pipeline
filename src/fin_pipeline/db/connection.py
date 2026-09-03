@@ -44,6 +44,17 @@ def _prune_none_values(value):
     return value
 
 
+def _serialize_metadata_map(value):
+    """Store metadata provenance/confidence as JSON strings because schemafull tables do not accept arbitrary nested keys."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
 def _surrealql_literal(value):
     """Render Python values into SurrealQL literals for direct SQL insertion."""
     if value is None:
@@ -87,6 +98,9 @@ class _HttpSurrealConnection:
 
     async def upsert(self, record_id: str, payload: dict):
         payload = _prune_none_values(dict(payload))
+        for field_name in ("metadataSources", "metadataConfidence"):
+            if field_name in payload:
+                payload[field_name] = _serialize_metadata_map(payload[field_name])
         if "updatedAt" not in payload or payload["updatedAt"] is None:
             payload["updatedAt"] = datetime.now(timezone.utc)
 

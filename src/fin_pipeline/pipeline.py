@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import asyncio
 import hashlib
 from fin_pipeline.config.logger import pipeline_logger as log
@@ -117,6 +118,11 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
                 existing_value = payload.get(metadata_key)
                 if parsed.get(metadata_key) and existing_value in (None, "", "UNKNOWN"):
                     payload[metadata_key] = parsed[metadata_key]
+
+            if isinstance(payload.get("metadataSources"), dict):
+                payload["metadataSources"] = json.dumps(payload["metadataSources"], ensure_ascii=False)
+            if isinstance(payload.get("metadataConfidence"), dict):
+                payload["metadataConfidence"] = json.dumps(payload["metadataConfidence"], ensure_ascii=False)
             log.success(f"📝 Text & layout extraction parsed successfully via strategy: {parsed['reason']}")
             
         except (IOError, OSError, ValueError, KeyError) as exc:
@@ -187,6 +193,10 @@ async def run_html_content_pipeline(metadata_input: dict, html_content: str, sou
         for metadata_key in ("stockName", "filingDate", "filingType", "exchange"):
             if parsed.get(metadata_key) and payload.get(metadata_key) in (None, "", "UNKNOWN"):
                 payload[metadata_key] = parsed[metadata_key]
+        if isinstance(payload.get("metadataSources"), dict):
+            payload["metadataSources"] = json.dumps(payload["metadataSources"], ensure_ascii=False)
+        if isinstance(payload.get("metadataConfidence"), dict):
+            payload["metadataConfidence"] = json.dumps(payload["metadataConfidence"], ensure_ascii=False)
     except (IOError, OSError, ValueError) as exc:
         log.exception(f"💥 Failed in-memory HTML parser for filing {filing_id}")
         payload.update({"documentStatus": STATUS_FAILED, "documentStatusReason": f"Layout Error: {exc}"})

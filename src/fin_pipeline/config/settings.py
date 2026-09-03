@@ -44,11 +44,11 @@ def get_env(key: str, default: str = "") -> str:
     """Retrieve configuration, giving system OS variables precedence over .env file values."""
     return os.getenv(key, env_values.get(key, default))
 
-DB_ENDPOINT = get_env("SURREAL_ENDPOINT")
+DB_ENDPOINT = get_env("SURREAL_ENDPOINT", "http://127.0.0.1:8000")
 DB_USER = get_env("SURREAL_USER", "root")
-DB_PASS = get_env("SURREAL_PASS")
-DB_NS = get_env("SURREAL_NAMESPACE")
-DB_DB = get_env("SURREAL_DATABASE")
+DB_PASS = get_env("SURREAL_PASS", "secret")
+DB_NS = get_env("SURREAL_NAMESPACE", "finance")
+DB_DB = get_env("SURREAL_DATABASE", "analytics")
 COMPANY_TABLE = get_env("COMPANY_TABLE")
 EDGAR_IDENTITY = get_env("EDGAR_IDENTITY")
 
