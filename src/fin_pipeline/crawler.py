@@ -31,8 +31,18 @@ def scan_directory(dir_path: str, recursive: bool = True) -> Generator[Tuple[str
             "exchange": LOCAL_EXCHANGE,
             "filingType": DEFAULT_FILING_TYPE,
             "title": base_name.replace("_", " ").replace("-", " ").title(),
-            "filingDate": None, 
-            "referencedTickers": []
+            "filingDate": None,
+            "referencedTickers": [],
+            "metadataSources": {
+                "companyTicker": "directory_scan_default",
+                "exchange": "directory_scan_default",
+                "filingType": "directory_scan_default",
+            },
+            "metadataConfidence": {
+                "companyTicker": 0.0,
+                "exchange": 0.0,
+                "filingType": 0.0,
+            },
         }
         yield file_path, metadata
 
@@ -94,7 +104,17 @@ def scan_sec_edgar_html_directory(base_path: str) -> Generator[Tuple[str, Dict[s
                         "filingType": filing_type,
                         "title": f"{ticker} {filing_type}",
                         "filingDate": None,
-                        "referencedTickers": []
+                        "referencedTickers": [],
+                        "metadataSources": {
+                            "companyTicker": "directory_scan_sec",
+                            "exchange": "directory_scan_sec",
+                            "filingType": "directory_scan_sec",
+                        },
+                        "metadataConfidence": {
+                            "companyTicker": 0.6,
+                            "exchange": 0.6,
+                            "filingType": 0.7,
+                        },
                     }
                     
                     yield html_file, metadata

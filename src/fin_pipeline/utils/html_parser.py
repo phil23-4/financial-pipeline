@@ -19,19 +19,33 @@ def _ixbrl_value(soup: BeautifulSoup, field_name: str) -> str | None:
     return None
 
 
+def _candidate_value(field: str, value: str | None, source: str, confidence: float, candidates: Dict[str, Dict[str, Any]]) -> None:
+    """Record the strongest discovered value for a metadata field."""
+    if not value:
+        return
+    cleaned = value.strip().replace("\u00a0", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned:
+        return
+    current = candidates.get(field)
+    if current is None or confidence > current["confidence"]:
+        candidates[field] = {
+            "value": cleaned,
+            "source": source,
+            "confidence": confidence,
+        }
+
+
 def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
     """Extract company and reporting-period metadata from Inline XBRL HTML."""
     soup = BeautifulSoup(html_content, 'html.parser')
-    company_name = _ixbrl_value(soup, "EntityRegistrantName")
-    filing_date = _ixbrl_value(soup, "DocumentPeriodEndDate")
-    filing_type = _ixbrl_value(soup, "DocumentType")
-    cik = _ixbrl_value(soup, "EntityCentralIndexKey")
-    visible_text = soup.get_text(" ", strip=True).lower()
-    exchange = next(
-        (normalized for name, normalized in EXCHANGE_MAPPING.items() if name in visible_text),
-        None,
-    )
+    candidates: Dict[str, Dict[str, Any]] = {}
 
+    company_name = _ixbrl_value(soup, "EntityRegistrantName")
+    if company_name:
+        _candidate_value("stockName", company_name, "html_ixbrl", 0.92, candidates)
+
+    filing_date = _ixbrl_value(soup, "DocumentPeriodEndDate")
     if filing_date:
         parsed_date = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", filing_date)
         if parsed_date:
@@ -44,14 +58,37 @@ def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
                 normalized_date = re.sub(r"\s+", " ", normalized_date).strip()
                 normalized_date = re.sub(r"\s*,\s*", ", ", normalized_date)
                 filing_date = datetime.strptime(normalized_date, "%B %d, %Y").strftime("%Y-%m-%d")
+        _candidate_value("filingDate", filing_date, "html_ixbrl", 0.94, candidates)
 
-    return {
-        "stockName": company_name,
-        "filingDate": filing_date,
-        "filingType": filing_type,
-        "exchange": exchange,
-        "cik": cik,
+    filing_type = _ixbrl_value(soup, "DocumentType")
+    if filing_type:
+        _candidate_value("filingType", filing_type, "html_ixbrl", 0.93, candidates)
+
+    cik = _ixbrl_value(soup, "EntityCentralIndexKey")
+    if cik:
+        _candidate_value("cik", cik, "html_ixbrl", 0.9, candidates)
+
+    visible_text = soup.get_text(" ", strip=True).lower()
+    exchange = next(
+        (normalized for name, normalized in EXCHANGE_MAPPING.items() if name in visible_text),
+        None,
+    )
+    if exchange:
+        _candidate_value("exchange", exchange, "html_text_scan", 0.72, candidates)
+
+    result = {
+        "stockName": None,
+        "filingDate": None,
+        "filingType": None,
+        "exchange": None,
+        "cik": None,
     }
+    for field, details in candidates.items():
+        result[field] = details["value"]
+    if candidates:
+        result["metadataSources"] = {field: details["source"] for field, details in candidates.items()}
+        result["metadataConfidence"] = {field: details["confidence"] for field, details in candidates.items()}
+    return result
 
 
 def enrich_filing_metadata_with_edgartools(

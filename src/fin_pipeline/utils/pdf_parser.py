@@ -19,6 +19,37 @@ from fin_pipeline.config.constants import (
 from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
 
 
+def _clean_metadata_value(value: Optional[str]) -> Optional[str]:
+    """Normalize whitespace and common PDF noise in extracted metadata values."""
+    if value is None:
+        return None
+    cleaned = str(value).strip().replace("\u00a0", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or None
+
+
+def _update_candidate_metadata(
+    candidates: Dict[str, Dict[str, Any]],
+    field: str,
+    value: Optional[str],
+    source: str,
+    confidence: float,
+) -> None:
+    """Keep the highest-confidence match for each metadata field."""
+    parsed_value = _clean_metadata_value(value)
+    if not parsed_value:
+        return
+
+    current = candidates.get(field)
+    if current is None or confidence > current["confidence"]:
+        candidates[field] = {
+            "value": parsed_value,
+            "source": source,
+            "confidence": confidence,
+            "raw": value,
+        }
+
+
 def _extract_pdf_metadata_from_properties(reader: PdfReader) -> Dict[str, Optional[str]]:
     """Extract metadata from PDF document properties.
 
@@ -29,7 +60,6 @@ def _extract_pdf_metadata_from_properties(reader: PdfReader) -> Dict[str, Option
         if not metadata:
             return {}
 
-        # Normalize metadata keys (they might have different casings)
         normalized = {}
         for key, value in metadata.items():
             if key and isinstance(value, str):
@@ -59,7 +89,6 @@ def _extract_filing_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
         if parsed_date:
             metadata["filing_date"] = parsed_date
 
-    # Security & Corporate Identifiers
     cik_match = CIK_PATTERN.search(text)
     if cik_match:
         metadata["cik"] = cik_match.group(1)
@@ -80,14 +109,12 @@ def _extract_filing_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
     if sedol_match:
         metadata["sedol"] = sedol_match.group(1).upper()
 
-    # Company name extraction
     company_match = COMPANY_PATTERN.search(text)
     if company_match:
         company_name = company_match.group(1).strip()
         if 3 < len(company_name) < 200:
             metadata["stock_name"] = company_name
 
-    # Exchange detection based on broad mapping dictionary
     text_lower = text.lower()
     exchange = next(
         (
@@ -113,60 +140,58 @@ def _extract_filing_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
 def extract_filing_metadata(text: str, reader: Optional[PdfReader] = None) -> Dict[str, Any]:
     """Extract company and reporting-period metadata from PDF.
 
-    Attempts multiple extraction strategies:
-    1. PDF document properties (if available)
-    2. Regex pattern matching on document text
-    3. Internationalized patterns for global filings
-
-    Returns a dict with keys matching HTML parser schema:
-    - stockName: Company name
-    - filingDate: Report period end date (YYYY-MM-DD format)
-    - filingType: Form type (10-K, 10-Q, etc.)
-    - exchange: Stock exchange (NYSE, NASDAQ, etc.)
-    - cik: SEC Central Index Key
-    - lei: Legal Entity Identifier (Global)
-    - isin: International Securities Identification Number (Global)
-
-    Returns only fields that were successfully extracted.
+    Attempts multiple extraction strategies with confidence tracking so callers can
+    understand where each field was sourced from.
     """
-    metadata = {}
+    candidate_map: Dict[str, Dict[str, Any]] = {}
 
-    # Try PDF properties first (most reliable if available)
     if reader:
         props = _extract_pdf_metadata_from_properties(reader)
         if props.get("title"):
-            metadata["stock_name"] = props["title"]
+            _update_candidate_metadata(candidate_map, "stockName", props["title"], "pdf_properties", 0.88)
         if props.get("subject"):
-            metadata["filing_type"] = props["subject"]
+            _update_candidate_metadata(candidate_map, "filingType", props["subject"], "pdf_properties", 0.82)
         if props.get("keywords"):
-            metadata["exchange"] = props["keywords"]
+            _update_candidate_metadata(candidate_map, "exchange", props["keywords"], "pdf_properties", 0.72)
 
-    # Extract from text (covers both digital and OCR'd PDFs)
     text_metadata = _extract_filing_metadata_from_text(text)
-    metadata.update(text_metadata)
+    if text_metadata.get("stock_name"):
+        _update_candidate_metadata(candidate_map, "stockName", text_metadata["stock_name"], "pdf_text_regex", 0.78)
+    if text_metadata.get("filing_date"):
+        _update_candidate_metadata(candidate_map, "filingDate", text_metadata["filing_date"], "pdf_text_regex", 0.84)
+    if text_metadata.get("filing_type"):
+        _update_candidate_metadata(candidate_map, "filingType", text_metadata["filing_type"], "pdf_text_regex", 0.86)
+    if text_metadata.get("exchange"):
+        _update_candidate_metadata(candidate_map, "exchange", text_metadata["exchange"], "pdf_text_regex", 0.8)
+    if text_metadata.get("cik"):
+        _update_candidate_metadata(candidate_map, "cik", text_metadata["cik"], "pdf_text_regex", 0.9)
+    if text_metadata.get("lei"):
+        _update_candidate_metadata(candidate_map, "lei", text_metadata["lei"], "pdf_text_regex", 0.82)
+    if text_metadata.get("isin"):
+        _update_candidate_metadata(candidate_map, "isin", text_metadata["isin"], "pdf_text_regex", 0.82)
+    if text_metadata.get("cusip"):
+        _update_candidate_metadata(candidate_map, "cusip", text_metadata["cusip"], "pdf_text_regex", 0.82)
+    if text_metadata.get("sedol"):
+        _update_candidate_metadata(candidate_map, "sedol", text_metadata["sedol"], "pdf_text_regex", 0.82)
 
-    # Normalize keys to match parser output
-    result = {}
-    if metadata.get("stock_name"):
-        result["stockName"] = metadata["stock_name"]
-    if metadata.get("filing_date"):
-        result["filingDate"] = metadata["filing_date"]
-    if metadata.get("filing_type"):
-        result["filingType"] = metadata["filing_type"]
-    if metadata.get("exchange"):
-        result["exchange"] = metadata["exchange"]
+    result: Dict[str, Any] = {
+        "stockName": None,
+        "filingDate": None,
+        "filingType": None,
+        "exchange": None,
+        "cik": None,
+    }
+    metadata_sources: Dict[str, str] = {}
+    metadata_confidence: Dict[str, float] = {}
 
-    # Include both SEC and International Identifiers
-    if metadata.get("cik"):
-        result["cik"] = metadata["cik"]
-    if metadata.get("lei"):
-        result["lei"] = metadata["lei"]
-    if metadata.get("isin"):
-        result["isin"] = metadata["isin"]
-    if metadata.get("cusip"):
-        result["cusip"] = metadata["cusip"]
-    if metadata.get("sedol"):
-        result["sedol"] = metadata["sedol"]
+    for field, details in candidate_map.items():
+        result[field] = details["value"]
+        metadata_sources[field] = details["source"]
+        metadata_confidence[field] = details["confidence"]
+
+    if metadata_sources:
+        result["metadataSources"] = metadata_sources
+        result["metadataConfidence"] = metadata_confidence
 
     return result
 

@@ -34,6 +34,8 @@ class ExchangeFilingModel(BaseModel):
     documentTableCnt: Optional[int] = 0
     documentStatus: Optional[str] = "PROCESSED"
     documentStatusReason: Optional[str] = None
+    metadataSources: Optional[dict] = Field(default_factory=dict)
+    metadataConfidence: Optional[dict] = Field(default_factory=dict)
 
     @field_validator("filingDate", mode="before")
     @classmethod

@@ -84,13 +84,14 @@ def test_extract_filing_metadata_from_inline_xbrl():
     <ix:nonNumeric name="dei:DocumentType">10-K</ix:nonNumeric>
     """
 
-    assert extract_filing_metadata(html) == {
-        "stockName": "Bank of America Corporation",
-        "filingDate": "2021-12-31",
-        "filingType": "10-K",
-        "exchange": None,
-        "cik": None,
-    }
+    result = extract_filing_metadata(html)
+    assert result["stockName"] == "Bank of America Corporation"
+    assert result["filingDate"] == "2021-12-31"
+    assert result["filingType"] == "10-K"
+    assert result["exchange"] is None
+    assert result["cik"] is None
+    assert result["metadataSources"]["stockName"] == "html_ixbrl"
+    assert result["metadataConfidence"]["filingDate"] >= 0.9
 
 
 def test_extract_filing_metadata_finds_exchange_in_document_text():

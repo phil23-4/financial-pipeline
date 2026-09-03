@@ -107,6 +107,12 @@ async def run_ingestion_pipeline(metadata_input: dict, file_path: str, source: s
                 "documentStatusReason": parsed["reason"],
                 "documentType": detect_file_type(file_path).upper()
             })
+            metadata_sources = parsed.get("metadataSources")
+            if metadata_sources:
+                payload["metadataSources"] = metadata_sources
+            metadata_confidence = parsed.get("metadataConfidence")
+            if metadata_confidence:
+                payload["metadataConfidence"] = metadata_confidence
             for metadata_key in ("stockName", "filingDate", "filingType", "exchange"):
                 existing_value = payload.get(metadata_key)
                 if parsed.get(metadata_key) and existing_value in (None, "", "UNKNOWN"):
@@ -172,6 +178,12 @@ async def run_html_content_pipeline(metadata_input: dict, html_content: str, sou
             "documentStatusReason": parsed["reason"],
             "documentType": "HTML",
         })
+        metadata_sources = parsed.get("metadataSources")
+        if metadata_sources:
+            payload["metadataSources"] = metadata_sources
+        metadata_confidence = parsed.get("metadataConfidence")
+        if metadata_confidence:
+            payload["metadataConfidence"] = metadata_confidence
         for metadata_key in ("stockName", "filingDate", "filingType", "exchange"):
             if parsed.get(metadata_key) and payload.get(metadata_key) in (None, "", "UNKNOWN"):
                 payload[metadata_key] = parsed[metadata_key]
