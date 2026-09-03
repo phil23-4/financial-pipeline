@@ -65,10 +65,10 @@ sec = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/fin_pipeline"
-Documentation = "https://github.com/your-org/fin_pipeline#readme"
-Repository = "https://github.com/your-org/fin_pipeline.git"
-Issues = "https://github.com/your-org/fin_pipeline/issues"
+Homepage = "https://github.com/phil23-4/financial-pipeline"
+Documentation = "https://github.com/phil23-4/financial-pipeline#readme"
+Repository = "https://github.com/phil23-4/financial-pipeline.git"
+Issues = "https://github.com/phil23-4/financial-pipeline/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
