@@ -121,6 +121,7 @@ def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None):
 )
 @click.option("--filing-id", required=True, help="Unique ID for target document record")
 @click.option("--ticker", required=True, help="Company unique trading ticker symbol")
+@click.option("--stock-name", default=None, help="Legal company name, when known")
 @click.option("--stock-code", default="UNKNOWN", help="Stock identifier exchange code")
 @click.option(
     "--exchange", default="UNKNOWN", help="Name of the listing asset exchange platform"
@@ -136,6 +137,7 @@ def file(
     file_path: str,
     filing_id: str,
     ticker: str,
+    stock_name: str | None,
     stock_code: str,
     exchange: str,
     filing_type: str,
@@ -145,6 +147,7 @@ def file(
     metadata = {
         "filingId": filing_id,
         "companyTicker": ticker,
+        "stockName": stock_name,
         "stockCode": stock_code,
         "exchange": exchange,
         "filingType": filing_type,

@@ -99,7 +99,9 @@ def _normalize_html_date(value: str) -> Optional[str]:
         return None
 
 
-def extract_metadata_from_text(text: str, source: str) -> Dict[str, Any]:
+def extract_metadata_from_text(
+    text: str, source: str, company_text: Optional[str] = None
+) -> Dict[str, Any]:
     """Extract metadata candidates from textual content using regex patterns."""
     candidates: Dict[str, Dict[str, Any]] = {}
 
@@ -136,11 +138,24 @@ def extract_metadata_from_text(text: str, source: str) -> Dict[str, Any]:
     if sedol_match:
         _set_candidate(candidates, "sedol", sedol_match.group(1).upper(), source, 0.82)
 
-    company_match = COMPANY_PATTERN.search(text)
-    if company_match:
-        company_name = company_match.group(1).strip()
-        if 3 < len(company_name) < 200:
-            _set_candidate(candidates, "stockName", company_name, source, 0.78)
+    company_search_text = text if company_text is None else company_text
+    labeled_company_match = re.search(
+        r"(?im)^\s*[*_`]*(?:registrant|company|entity|issuer|legal)\s+name[*_`]*\s*[:\-]\s*([^\n]{3,120})\s*$",
+        company_search_text,
+    )
+    if labeled_company_match:
+        company_name = re.sub(r"[*_`]+", "", labeled_company_match.group(1)).strip()
+        _set_candidate(candidates, "stockName", company_name, source, 0.92)
+    else:
+        company_match = COMPANY_PATTERN.search(company_search_text)
+        if company_match:
+            company_name = company_match.group(1).strip()
+            if 3 < len(company_name) < 120 and not re.search(
+                r"\b(includes|provides|operates|reports|has|offers)\b",
+                company_name,
+                re.IGNORECASE,
+            ):
+                _set_candidate(candidates, "stockName", company_name, source, 0.78)
 
     exchange = _detect_exchange_from_text(text)
     if exchange:

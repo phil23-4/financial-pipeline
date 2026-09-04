@@ -22,28 +22,6 @@ def _clean_metadata_value(value: Optional[str]) -> Optional[str]:
     return cleaned or None
 
 
-def _update_candidate_metadata(
-    candidates: Dict[str, Dict[str, Any]],
-    field: str,
-    value: Optional[str],
-    source: str,
-    confidence: float,
-) -> None:
-    """Keep the highest-confidence match for each metadata field."""
-    parsed_value = _clean_metadata_value(value)
-    if not parsed_value:
-        return
-
-    current = candidates.get(field)
-    if current is None or confidence > current["confidence"]:
-        candidates[field] = {
-            "value": parsed_value,
-            "source": source,
-            "confidence": confidence,
-            "raw": value,
-        }
-
-
 def _extract_pdf_metadata_from_properties(
     reader: PdfReader,
 ) -> Dict[str, Optional[str]]:
@@ -67,7 +45,9 @@ def _extract_pdf_metadata_from_properties(
 
 
 def extract_filing_metadata(
-    text: str, reader: Optional[PdfReader] = None
+    text: str,
+    reader: Optional[PdfReader] = None,
+    company_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Extract company and reporting-period metadata from PDF.
 
@@ -91,7 +71,9 @@ def extract_filing_metadata(
                 candidate_map, "exchange", props["keywords"], "pdf_properties", 0.72
             )
 
-    text_metadata = extract_metadata_from_text(text, "pdf_text_regex")
+    text_metadata = extract_metadata_from_text(
+        text, "pdf_text_regex", company_text=company_text
+    )
     for field in [
         "stockName",
         "filingDate",
@@ -104,15 +86,13 @@ def extract_filing_metadata(
         "sedol",
     ]:
         if field in text_metadata and text_metadata[field] is not None:
-            candidate_map[field] = {
-                "value": text_metadata[field],
-                "source": text_metadata.get("metadataSources", {}).get(
-                    field, "pdf_text_regex"
-                ),
-                "confidence": text_metadata.get("metadataConfidence", {}).get(
-                    field, 0.8
-                ),
-            }
+            set_field_candidate(
+                candidate_map,
+                field,
+                text_metadata[field],
+                text_metadata.get("metadataSources", {}).get(field, "pdf_text_regex"),
+                text_metadata.get("metadataConfidence", {}).get(field, 0.8),
+            )
 
     result: Dict[str, Any] = {
         k: None
@@ -254,7 +234,9 @@ def parse_pdf_layout(file_path: str) -> dict:
         text += "\n\n## Extracted Tables\n\n" + "\n\n".join(
             table["markdown"] for table in tables
         )
-    metadata = extract_filing_metadata(text, reader)
+        metadata = extract_filing_metadata(
+            text, reader, company_text="\n".join(page_texts[:3])
+        )
     return {
         "text": text,
         "tables": tables,

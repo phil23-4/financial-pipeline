@@ -277,11 +277,14 @@ fin-pipeline sec-edgar-stream ./companies.csv --year-range 2018-2025 --forms 10-
 fin-pipeline file ./downloads/apple_10k.pdf \
   --filing-id "sec_0000320193_2026_10K" \
   --ticker "AAPL" \
+   --stock-name "Apple Inc." \
   --stock-code "320193" \
   --exchange "NASDAQ" \
   --type "10-K" \
   --source SEC
 ```
+
+When the legal company name is known from the filing source, pass it with `--stock-name`. This value is treated as authoritative; PDF extraction is used only when the field is omitted.
 
 ### 6. Ingest a single HTML filing with metadata
 
