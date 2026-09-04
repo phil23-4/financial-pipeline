@@ -27,9 +27,7 @@ class ExchangeFilingModel(BaseModel):
     documentUrl: str | None = None
     source: str
     updatedAt: str = Field(
-        default_factory=lambda: datetime.now(UTC).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        default_factory=lambda: datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
     referencedTickers: list[str] | None = Field(default_factory=list)
     documentSize: int | None = None

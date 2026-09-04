@@ -117,7 +117,8 @@ EXCHANGE_MAPPING = {
 FILING_TYPE_PATTERN = re.compile(
     r"\b("
     # Amended SEC filings must precede their base forms.
-    r"10-K/A|10-K|10-Q/A|10-Q|8-K/A|8-K|20-F/A|20-F|40-F/A|40-F|" r"6-K|11-K|"
+    r"10-K/A|10-K|10-Q/A|10-Q|8-K/A|8-K|20-F/A|20-F|40-F/A|40-F|"
+    r"6-K|11-K|"
     # Registration & Proxy
     r"S-1|S-3|S-4|S-8|F-1|F-3|F-4|DEF 14A|PRE 14A|PX14A6G|ARS|"
     # Ownership & Funds
@@ -172,7 +173,8 @@ COMPANY_PATTERN = re.compile(
     # Asia-Pacific
     r"Pte\.?\s+Ltd\.?|Bhd\.?|Tbk|K\.K\.|"
     # General Corporate Groupings
-    r"SE|Societas Europaea|Group|Holdings|Holding|Trust|Fund" r")\b",
+    r"SE|Societas Europaea|Group|Holdings|Holding|Trust|Fund"
+    r")\b",
     re.MULTILINE,
 )
 
@@ -185,7 +187,8 @@ DATE_PATTERN = re.compile(
     r"\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z\.]{3,9}\s+,?\s*\d{4}|"
     r"[A-Za-z\.]{3,9}\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{4}|"
     # Pattern B: ISO Formats ("2023-12-31", "2023/12/31", "31/12/2023")
-    r"\d{4}[-/]\d{2}[-/]\d{2}|\d{1,2}[-/]\d{2}[-/]\d{4}" r")",
+    r"\d{4}[-/]\d{2}[-/]\d{2}|\d{1,2}[-/]\d{2}[-/]\d{4}"
+    r")",
     re.IGNORECASE,
 )
 

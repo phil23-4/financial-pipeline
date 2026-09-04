@@ -78,6 +78,7 @@ financial-pipeline/
   - `filingType`
   - `exchange`
   - `cik`
+- **Folder-aware local scanning**: structured local PDF paths and filenames provide company, stock code, report type, and reporting year metadata before document parsing
 - **Markdown cleanup**: repeated page headers and footers are removed, bullets are normalized, and spacing is consolidated
 - **Graph persistence**: ingested records can create company and filing entities and relationships in SurrealDB
 - **Pipeline resilience**: repeated network/database calls use retry logic; pooled connections are supported; stale records are cleaned before overwrite
@@ -147,6 +148,35 @@ Metadata supplied by the caller remains authoritative. The pipeline only fills m
 
 This allows local extraction to act as a recovery path without overwriting trusted upstream metadata.
 
+### Local PDF naming convention
+
+The local scanner recognizes paths such as:
+
+```text
+Filings Data/
+└── romania/
+   └── Banca Transilvania/
+      └── 131662.ar.en.2018.pdf
+```
+
+From this layout it populates:
+
+| Metadata field | Source                              | Example              |
+| -------------- | ----------------------------------- | -------------------- |
+| `stockName`    | Immediate parent directory          | `Banca Transilvania` |
+| `stockCode`    | Filename prefix                     | `131662`             |
+| `filingType`   | Filename report code                | `ANNUAL_REPORT`      |
+| `filingDate`   | Filename year, inferred as year-end | `2018-12-31`         |
+| `exchange`     | Local source default                | `LOCAL_FS`           |
+
+The supported filename pattern is:
+
+```text
+{stock_code}.{ar|annual_report}.{language}.{year}.pdf
+```
+
+Ticker and exchange cannot be inferred reliably from this layout, so they remain `UNKNOWN` and `LOCAL_FS` respectively unless supplied through another metadata source. Files that do not match the pattern retain the scanner defaults.
+
 ## Requirements
 
 ### System dependencies
@@ -198,17 +228,17 @@ pip install -e ".[sec]"
 
 The project reads a mix of environment variables and `.env` values via `src/fin_pipeline/config/settings.py`.
 
-| Variable | Purpose | Typical value |
-| --- | --- | --- |
-| `SURREAL_ENDPOINT` | SurrealDB HTTP endpoint | `http://127.0.0.1:8000` |
-| `SURREAL_USER` | SurrealDB username | `root` |
-| `SURREAL_PASS` | SurrealDB password | `secret` |
-| `SURREAL_NAMESPACE` | SurrealDB namespace | `finance` |
-| `SURREAL_DATABASE` | SurrealDB database | `analytics` |
-| `COMPANY_TABLE` | Company table name used by the pipeline | `company` |
-| `EDGAR_IDENTITY` | SEC User-Agent string for optional edgartools enrichment | `Your Name your.email@example.com` |
-| `FIN_PIPELINE_LOG_LEVEL` | Loguru log level | `INFO` |
-| `FIN_PIPELINE_LOG_DIR` | Directory for JSON logs | `logs` |
+| Variable                 | Purpose                                                  | Typical value                      |
+| ------------------------ | -------------------------------------------------------- | ---------------------------------- |
+| `SURREAL_ENDPOINT`       | SurrealDB HTTP endpoint                                  | `http://127.0.0.1:8000`            |
+| `SURREAL_USER`           | SurrealDB username                                       | `root`                             |
+| `SURREAL_PASS`           | SurrealDB password                                       | `secret`                           |
+| `SURREAL_NAMESPACE`      | SurrealDB namespace                                      | `finance`                          |
+| `SURREAL_DATABASE`       | SurrealDB database                                       | `analytics`                        |
+| `COMPANY_TABLE`          | Company table name used by the pipeline                  | `company`                          |
+| `EDGAR_IDENTITY`         | SEC User-Agent string for optional edgartools enrichment | `Your Name your.email@example.com` |
+| `FIN_PIPELINE_LOG_LEVEL` | Loguru log level                                         | `INFO`                             |
+| `FIN_PIPELINE_LOG_DIR`   | Directory for JSON logs                                  | `logs`                             |
 
 Example `.env`:
 
@@ -342,6 +372,7 @@ DEFINE FIELD stockName ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD filingType ON TABLE exchange_filing TYPE string;
 DEFINE FIELD documentText ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD documentTables ON TABLE exchange_filing TYPE option<array<object>>;
+DEFINE FIELD documentTables[*].accuracy ON TABLE exchange_filing TYPE option<float>;
 DEFINE FIELD referencedTickers ON TABLE exchange_filing TYPE option<array<string>>;
 DEFINE FIELD documentStatus ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD updatedAt ON TABLE exchange_filing TYPE datetime;
@@ -367,7 +398,7 @@ Current protections include:
 - stale-record cleanup before each overwrite
 - database retry and backoff logic
 - graph relation cleanup so duplicate edges are not created endlessly
-- explicit handling for partial failures in database or graph writes
+- explicit, targeted exception handling for database, HTML, PDF, and OCR failures
 - OCR page failures that do not crash the entire document process
 
 ## Testing
@@ -389,6 +420,7 @@ pytest -q
 Current tests cover:
 
 - crawler behavior and directory scanning
+- folder-aware local PDF metadata parsing
 - ingestion pipeline success paths
 - metadata extraction from HTML
 - PDF table extraction and OCR failure handling
@@ -403,6 +435,9 @@ This project already includes several recent improvements:
 - automatic metadata extraction for PDFs as well as HTML
 - PyMuPDF4LLM-based structured Markdown extraction for PDF content
 - Camelot-based table extraction with normalized headers and parsing accuracy
+- folder-aware local scanning for structured PDF paths and filenames
+- authoritative `--stock-name` support for explicit file ingestion
+- table accuracy persistence through Pydantic and SurrealDB schemas
 - retry-aware database access with exponential backoff
 - HTTP connection pooling support for SurrealDB
 - stricter exception handling in OCR and parse workflows
@@ -428,4 +463,3 @@ The codebase is structured to be extended in a few typical ways:
 - metadata normalization across PDF and HTML formats
 - SurrealDB persistence and company graph relationships
 - production-oriented operational safeguards
-
