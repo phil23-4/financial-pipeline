@@ -93,6 +93,11 @@ minversion = "7.0"
 addopts = "-ra -q"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+filterwarnings = [
+    "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]
 
 [tool.mypy]
 python_version = "3.11"

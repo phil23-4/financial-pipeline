@@ -1,4 +1,4 @@
-import fitz  # PyMuPDF
+import pymupdf  # PyMuPDF
 import pytesseract
 from pdf2image import convert_from_path
 from PIL import Image
@@ -10,7 +10,7 @@ def _process_page(file_path: str, page_num: int) -> tuple[int, str]:
     """Renders a single page using PyMuPDF and extracts text via Tesseract."""
     try:
         # Open a thread-safe document handle or load page independently
-        with fitz.open(file_path) as doc:
+        with pymupdf.open(file_path) as doc:
             page = doc.load_page(page_num)
             # Render page to pixmap at 200 DPI for optimal OCR balance of speed and clarity
             pix = page.get_pixmap(dpi=200)
@@ -38,7 +38,7 @@ def extract_text_via_ocr(file_path: str, max_workers: int = 4) -> str:
     """
     try:
         # Get total page count first without loading images into RAM
-        with fitz.open(file_path) as doc:
+        with pymupdf.open(file_path) as doc:
             total_pages = len(doc)
 
         texts = [""] * total_pages

@@ -48,6 +48,6 @@ def test_metadata_prefers_labeled_company_name_from_early_pages():
 
 def test_ocr_returns_empty_string_when_document_cannot_open():
     with patch(
-        "fin_pipeline.utils.ocr_engine.fitz.open", side_effect=OSError("bad PDF")
+        "fin_pipeline.utils.ocr_engine.pymupdf.open", side_effect=OSError("bad PDF")
     ):
         assert extract_text_via_ocr("report.pdf") == ""
