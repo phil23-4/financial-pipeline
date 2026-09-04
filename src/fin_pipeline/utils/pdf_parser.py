@@ -234,9 +234,9 @@ def parse_pdf_layout(file_path: str) -> dict:
         text += "\n\n## Extracted Tables\n\n" + "\n\n".join(
             table["markdown"] for table in tables
         )
-        metadata = extract_filing_metadata(
-            text, reader, company_text="\n".join(page_texts[:3])
-        )
+    metadata = extract_filing_metadata(
+        text, reader, company_text="\n".join(page_texts[:3])
+    )
     return {
         "text": text,
         "tables": tables,

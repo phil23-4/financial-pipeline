@@ -151,7 +151,7 @@ def extract_metadata_from_text(
         if company_match:
             company_name = company_match.group(1).strip()
             if 3 < len(company_name) < 120 and not re.search(
-                r"\b(includes|provides|operates|reports|has|offers)\b",
+                r"\b(includes|provides|operates|reports|has|offers|was|is|are|were|providing|operating)\b",
                 company_name,
                 re.IGNORECASE,
             ):
