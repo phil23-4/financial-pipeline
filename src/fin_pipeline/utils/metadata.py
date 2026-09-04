@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fin_pipeline.config.constants import (
     CIK_PATTERN,
@@ -32,7 +32,7 @@ _CANONICAL_FIELDS = (
 )
 
 
-def _clean_metadata_value(value: Optional[str]) -> Optional[str]:
+def _clean_metadata_value(value: str | None) -> str | None:
     if value is None:
         return None
     cleaned = str(value).strip().replace("\u00a0", " ")
@@ -41,9 +41,9 @@ def _clean_metadata_value(value: Optional[str]) -> Optional[str]:
 
 
 def _set_candidate(
-    candidates: Dict[str, Dict[str, Any]],
+    candidates: dict[str, dict[str, Any]],
     field: str,
-    value: Optional[str],
+    value: str | None,
     source: str,
     confidence: float,
 ) -> None:
@@ -67,7 +67,7 @@ def _normalize_filing_type(filing_type: str) -> str:
     return text.title() if "report" in text.lower() else text.upper()
 
 
-def _detect_exchange_from_text(text: str) -> Optional[str]:
+def _detect_exchange_from_text(text: str) -> str | None:
     text_lower = text.lower()
     for name, normalized in sorted(
         EXCHANGE_MAPPING.items(), key=lambda item: len(item[0]), reverse=True
@@ -77,7 +77,7 @@ def _detect_exchange_from_text(text: str) -> Optional[str]:
     return None
 
 
-def _normalize_html_date(value: str) -> Optional[str]:
+def _normalize_html_date(value: str) -> str | None:
     if not value:
         return None
     match = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", value)
@@ -86,7 +86,7 @@ def _normalize_html_date(value: str) -> Optional[str]:
     match = re.search(
         r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})\s*,?\s+(\d{4})",
         value,
-        re.I,
+        re.IGNORECASE,
     )
     if not match:
         return None
@@ -100,10 +100,10 @@ def _normalize_html_date(value: str) -> Optional[str]:
 
 
 def extract_metadata_from_text(
-    text: str, source: str, company_text: Optional[str] = None
-) -> Dict[str, Any]:
+    text: str, source: str, company_text: str | None = None
+) -> dict[str, Any]:
     """Extract metadata candidates from textual content using regex patterns."""
-    candidates: Dict[str, Dict[str, Any]] = {}
+    candidates: dict[str, dict[str, Any]] = {}
 
     filing_match = FILING_TYPE_PATTERN.search(text)
     if filing_match:
@@ -164,11 +164,11 @@ def extract_metadata_from_text(
     return merge_metadata_candidates(candidates)
 
 
-def merge_metadata_candidates(candidates: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def merge_metadata_candidates(candidates: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Convert metadata candidate records into a dict plus provenance/confidence maps."""
     result = {field: None for field in _CANONICAL_FIELDS}
-    metadata_sources: Dict[str, str] = {}
-    metadata_confidence: Dict[str, float] = {}
+    metadata_sources: dict[str, str] = {}
+    metadata_confidence: dict[str, float] = {}
 
     for field, details in candidates.items():
         result[field] = details["value"]
@@ -182,9 +182,9 @@ def merge_metadata_candidates(candidates: Dict[str, Dict[str, Any]]) -> Dict[str
 
 
 def set_field_candidate(
-    candidates: Dict[str, Dict[str, Any]],
+    candidates: dict[str, dict[str, Any]],
     field: str,
-    value: Optional[str],
+    value: str | None,
     source: str,
     confidence: float,
 ) -> None:

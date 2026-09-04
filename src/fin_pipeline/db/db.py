@@ -7,8 +7,6 @@ import json
 import urllib.error
 import urllib.request
 from datetime import datetime
-from pathlib import Path
-from typing import List
 
 from loguru import logger
 
@@ -74,9 +72,9 @@ def surreal_query(sql: str, timeout: int = 120) -> dict:
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8") if e.fp else ""
         return {"error": f"HTTP {e.code}: {body[:500]}"}
-    except (urllib.error.URLError, TimeoutError) as e:
+    except (urllib.error.URLError, TimeoutError):
         raise
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         return {"error": str(e)}
 
 
@@ -137,9 +135,9 @@ def surreal_rpc(method: str, params: list, timeout: int = 120) -> dict:
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8") if e.fp else ""
         return {"error": f"HTTP {e.code}: {body_text[:500]}"}
-    except (urllib.error.URLError, TimeoutError) as e:
+    except (urllib.error.URLError, TimeoutError):
         raise
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         return {"error": str(e)}
 
 
@@ -149,7 +147,7 @@ def surreal_rpc(method: str, params: list, timeout: int = 120) -> dict:
 
 
 def upsert_batch_with_retry(
-    statements: List[str], depth: int = 0, max_depth: int = 6
+    statements: list[str], depth: int = 0, max_depth: int = 6
 ) -> int:
     """UPSERT a list of SurrealQL statements in one request.
 
@@ -175,8 +173,8 @@ def upsert_batch_with_retry(
                     )
                     fh.write("-- " + err_txt.replace("\n", " ")[:500] + "\n")
                     fh.write(statements[0] + "\n\n")
-            except Exception:
-                pass
+            except OSError as write_err:
+                log.debug(f"Could not write failed batch diagnostics: {write_err}")
             return 0
         mid = len(statements) // 2
         left = upsert_batch_with_retry(statements[:mid], depth + 1, max_depth)

@@ -1,19 +1,20 @@
-import click
 import asyncio
 import os
+
+import click
+
 from fin_pipeline.pipeline import (
     process_entire_directory,
-    run_ingestion_pipeline,
-    process_sec_edgar_html_directory,
     process_sec_edgar_csv,
     process_sec_edgar_csv_stream,
+    process_sec_edgar_html_directory,
+    run_ingestion_pipeline,
 )
 
 
 @click.group()
 def main():
     """FinPipeline: Ingest financial statements and PDFs into SurrealDB."""
-    pass
 
 
 @main.command()

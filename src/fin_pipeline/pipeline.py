@@ -1,29 +1,29 @@
-import os
-import time
-import json
 import asyncio
 import hashlib
-from fin_pipeline.config.logger import pipeline_logger as log
+import json
+import os
+import time
+
 from fin_pipeline.config.constants import (
-    FILING_TABLE,
-    STATUS_PROCESSED,
-    STATUS_FAILED,
-    SOURCE_LOCAL,
-    FILE_TYPE_PDF,
     FILE_TYPE_HTML,
+    FILE_TYPE_PDF,
     FILE_TYPE_UNKNOWN,
+    FILING_TABLE,
+    STATUS_FAILED,
+    STATUS_PROCESSED,
 )
-from fin_pipeline.models.schemas import ExchangeFilingModel
-from fin_pipeline.utils.crypto import calculate_file_hash
-from fin_pipeline.utils.pdf_parser import parse_pdf_layout
-from fin_pipeline.utils.html_parser import (
-    parse_html_file,
-    parse_html_content,
-    enrich_filing_metadata_with_edgartools,
-)
+from fin_pipeline.config.logger import pipeline_logger as log
+from fin_pipeline.crawler import scan_directory
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.db.relations import establish_graph_relations
-from fin_pipeline.crawler import scan_directory
+from fin_pipeline.models.schemas import ExchangeFilingModel
+from fin_pipeline.utils.crypto import calculate_file_hash
+from fin_pipeline.utils.html_parser import (
+    enrich_filing_metadata_with_edgartools,
+    parse_html_content,
+    parse_html_file,
+)
+from fin_pipeline.utils.pdf_parser import parse_pdf_layout
 
 
 def detect_file_type(file_path: str) -> str:
@@ -160,14 +160,14 @@ async def run_ingestion_pipeline(
                 f"📝 Text & layout extraction parsed successfully via strategy: {parsed['reason']}"
             )
 
-        except (IOError, OSError, ValueError, KeyError) as exc:
+        except (OSError, ValueError, KeyError) as exc:
             log.exception(
                 f"💥 Failed parser engine step processing file layout layers: {file_path}"
             )
             payload.update(
                 {
                     "documentStatus": STATUS_FAILED,
-                    "documentStatusReason": f"Layout Error: {str(exc)}",
+                    "documentStatusReason": f"Layout Error: {exc!s}",
                 }
             )
 
@@ -207,7 +207,7 @@ async def run_ingestion_pipeline(
         )
         return True
 
-    except Exception as db_err:
+    except (OSError, RuntimeError, ValueError, KeyError) as db_err:
         log.error(
             f"📡 Database adapter failed to securely commit transaction records for id: {record_id} | Err: {db_err}"
         )
@@ -260,7 +260,7 @@ async def run_html_content_pipeline(
             payload["metadataConfidence"] = json.dumps(
                 payload["metadataConfidence"], ensure_ascii=False
             )
-    except (IOError, OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.exception(f"💥 Failed in-memory HTML parser for filing {filing_id}")
         payload.update(
             {
@@ -288,7 +288,7 @@ async def run_html_content_pipeline(
             f"🏆 Streamed filing {record_id} into SurrealDB in {time.time() - start_time:.2f}s"
         )
         return True
-    except (IOError, RuntimeError, ValueError, KeyError) as exc:
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
         log.error(f"📡 Stream database commit failed for {filing_id}: {exc}")
         return False
 
@@ -318,7 +318,7 @@ async def process_entire_directory(
         async with semaphore:
             try:
                 await run_ingestion_pipeline(meta, file_path, source=source_type)
-            except (IOError, RuntimeError, ValueError) as e:
+            except (OSError, RuntimeError, ValueError) as e:
                 error_msg = f"Worker execution failed for {file_path}: {e}"
                 log.error(f"❌ {error_msg}")
                 errors.append(error_msg)

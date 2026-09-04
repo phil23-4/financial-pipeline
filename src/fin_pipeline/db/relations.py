@@ -1,9 +1,12 @@
-from surrealdb import Surreal
-from fin_pipeline.config.settings import COMPANY_TABLE
-from fin_pipeline.db.db import surreal_query
-from fin_pipeline.db.connection import _surrealql_literal
-from fin_pipeline.utils.db_utils import quote_record_id
+from datetime import UTC
+
 from loguru import logger as log
+from surrealdb import Surreal
+
+from fin_pipeline.config.settings import COMPANY_TABLE
+from fin_pipeline.db.connection import _surrealql_literal
+from fin_pipeline.db.db import surreal_query
+from fin_pipeline.utils.db_utils import quote_record_id
 
 
 async def ensure_company_exists(
@@ -21,13 +24,13 @@ async def ensure_company_exists(
         return check_data[0]["id"]  # Already exists
 
     # Create new company record using UPSERT
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     company_id = f"{COMPANY_TABLE}:{ticker}"
     company_payload = {
         "ticker": ticker,
         "companyName": company_name or ticker,
-        "updatedAt": datetime.now(timezone.utc),
+        "updatedAt": datetime.now(UTC),
     }
     if exchange:
         company_payload["exchange"] = exchange

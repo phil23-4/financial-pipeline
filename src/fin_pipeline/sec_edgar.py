@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import csv
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
-from fin_pipeline.config.settings import EDGAR_IDENTITY
 from fin_pipeline.config.logger import pipeline_logger as log
+from fin_pipeline.config.settings import EDGAR_IDENTITY
 
 
 def read_company_csv(csv_path: str) -> Iterator[dict]:

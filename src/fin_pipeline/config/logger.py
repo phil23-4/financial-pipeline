@@ -1,7 +1,8 @@
+import json
 import os
 import sys
-import json
 from datetime import datetime
+
 from loguru import logger
 
 LOG_LEVEL = os.getenv("FIN_PIPELINE_LOG_LEVEL", "INFO").upper()

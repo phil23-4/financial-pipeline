@@ -1,11 +1,12 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, patch
+
 from fin_pipeline.config.logger import serialize_json_log
 from fin_pipeline.db.connection import SurrealConnection
-from fin_pipeline.pipeline import run_ingestion_pipeline, run_html_content_pipeline
+from fin_pipeline.pipeline import run_html_content_pipeline, run_ingestion_pipeline
 from fin_pipeline.utils.html_parser import extract_filing_metadata
 
 
@@ -67,7 +68,7 @@ async def test_successful_pipeline_ingestion(
 def test_serialize_json_log_uses_loguru_time_field():
     """Ensure JSON log serialization is compatible with Loguru's current record layout."""
     record = {
-        "time": datetime(2026, 9, 1, 15, 16, 50, tzinfo=timezone.utc),
+        "time": datetime(2026, 9, 1, 15, 16, 50, tzinfo=UTC),
         "level": SimpleNamespace(name="INFO"),
         "message": "hello world",
         "module": "test_module",

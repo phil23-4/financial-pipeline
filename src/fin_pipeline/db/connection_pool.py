@@ -1,16 +1,18 @@
 """Connection pooling for SurrealDB to optimize resource usage."""
 
 from typing import Optional
-from surrealdb import Surreal
-from fin_pipeline.config.settings import DB_ENDPOINT, DB_AUTH
+
 from loguru import logger as log
+from surrealdb import Surreal
+
+from fin_pipeline.config.settings import DB_AUTH, DB_ENDPOINT
 
 
 class SurrealConnectionPool:
     """Singleton connection pool for SurrealDB to avoid creating new connections for each request."""
 
     _instance: Optional["SurrealConnectionPool"] = None
-    _pool: Optional[Surreal] = None
+    _pool: Surreal | None = None
 
     def __new__(cls):
         if cls._instance is None:
@@ -36,7 +38,7 @@ class SurrealConnectionPool:
             await db.signin(DB_AUTH)
             await db.use(namespace=DB_AUTH["namespace"], database=DB_AUTH["database"])
             log.debug("SurrealDB connection established")
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             log.error(f"Failed to establish SurrealDB connection: {e}")
             raise
         return db
@@ -47,7 +49,7 @@ class SurrealConnectionPool:
             try:
                 await self._pool.close()
                 log.info("SurrealDB connection pool closed")
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 log.warning(f"Error closing SurrealDB connection: {e}")
             finally:
                 self._pool = None

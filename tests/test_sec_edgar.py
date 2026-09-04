@@ -1,10 +1,11 @@
-import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from fin_pipeline.sec_edgar import read_company_csv, stream_filings_from_csv
+import pytest
 from click.testing import CliRunner
+
 from fin_pipeline.cli import main
+from fin_pipeline.sec_edgar import read_company_csv, stream_filings_from_csv
 
 
 def test_read_company_csv_normalizes_rows(tmp_path):

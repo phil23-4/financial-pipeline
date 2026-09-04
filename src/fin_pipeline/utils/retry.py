@@ -1,8 +1,10 @@
 """Retry utilities with exponential backoff for resilient network operations."""
 
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable, Type, Tuple, Any
+from typing import Any
+
 from loguru import logger as log
 
 
@@ -11,7 +13,7 @@ def retry_with_backoff(
     initial_delay: float = 1.0,
     max_delay: float = 60.0,
     backoff_factor: float = 2.0,
-    retryable_exceptions: Tuple[Type[Exception], ...] = (
+    retryable_exceptions: tuple[type[Exception], ...] = (
         IOError,
         OSError,
         TimeoutError,

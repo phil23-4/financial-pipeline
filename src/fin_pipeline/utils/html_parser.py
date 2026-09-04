@@ -2,9 +2,10 @@
 
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any
 
 from bs4 import BeautifulSoup
+from loguru import logger as log
 
 from fin_pipeline.config.constants import EXCHANGE_MAPPING
 from fin_pipeline.utils.metadata import (
@@ -31,7 +32,7 @@ def _candidate_value(
     value: str | None,
     source: str,
     confidence: float,
-    candidates: Dict[str, Dict[str, Any]],
+    candidates: dict[str, dict[str, Any]],
 ) -> None:
     """Record the strongest discovered value for a metadata field."""
     if not value:
@@ -49,10 +50,10 @@ def _candidate_value(
         }
 
 
-def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
+def extract_filing_metadata(html_content: str) -> dict[str, Any]:
     """Extract company and reporting-period metadata from Inline XBRL HTML."""
     soup = BeautifulSoup(html_content, "html.parser")
-    candidates: Dict[str, Dict[str, Any]] = {}
+    candidates: dict[str, dict[str, Any]] = {}
 
     company_name = _ixbrl_value(soup, "EntityRegistrantName")
     if company_name:
@@ -96,8 +97,8 @@ def extract_filing_metadata(html_content: str) -> Dict[str, Any]:
 
 
 def enrich_filing_metadata_with_edgartools(
-    metadata: Dict[str, Any], accession_number: str
-) -> Dict[str, Any]:
+    metadata: dict[str, Any], accession_number: str
+) -> dict[str, Any]:
     """Best-effort SEC metadata enrichment using edgartools.
 
     The local parser remains authoritative for document text and tables. This
@@ -105,6 +106,7 @@ def enrich_filing_metadata_with_edgartools(
     optional dependency, identity, or SEC network is unavailable.
     """
     import os
+
     from fin_pipeline.config.settings import EDGAR_IDENTITY
 
     if not (os.getenv("EDGAR_IDENTITY") or EDGAR_IDENTITY) or not metadata.get("cik"):
@@ -137,7 +139,7 @@ def enrich_filing_metadata_with_edgartools(
                         )
                         break
         return enriched
-    except Exception:
+    except (AttributeError, ImportError, KeyError, OSError, TypeError, ValueError):
         return metadata
 
 
@@ -206,13 +208,13 @@ def extract_tables_from_html(html_content: str) -> tuple:
                     "markdown": markdown_table,
                 }
             )
-        except Exception as e:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            log.debug(f"Skipping malformed HTML table {table_idx}: {exc}")
 
     return extracted_tables, len(extracted_tables), "html_beautifulsoup"
 
 
-def parse_html_content(html_content: str) -> Dict[str, Any]:
+def parse_html_content(html_content: str) -> dict[str, Any]:
     """Parse HTML already held in memory without creating a local file."""
     text = extract_text_from_html(html_content)
     tables, table_cnt, reason = extract_tables_from_html(html_content)
@@ -225,7 +227,7 @@ def parse_html_content(html_content: str) -> Dict[str, Any]:
     }
 
 
-def parse_html_file(file_path: str) -> Dict[str, Any]:
+def parse_html_file(file_path: str) -> dict[str, Any]:
     """Parse an HTML SEC Edgar filing and extract text and tables.
 
     Args:
@@ -244,20 +246,20 @@ def parse_html_file(file_path: str) -> Dict[str, Any]:
         # Try alternative encoding
         with open(file_path, "r", encoding="latin-1") as f:
             html_content = f.read()
-    except Exception as e:
+    except OSError as e:
         return {
             "text": "",
             "tables": [],
             "table_cnt": 0,
-            "reason": f"Read error: {str(e)}",
+            "reason": f"Read error: {e!s}",
         }
 
     try:
         return parse_html_content(html_content)
-    except Exception as e:
+    except (AttributeError, TypeError, ValueError) as e:
         return {
             "text": "",
             "tables": [],
             "table_cnt": 0,
-            "reason": f"Parse error: {str(e)}",
+            "reason": f"Parse error: {e!s}",
         }

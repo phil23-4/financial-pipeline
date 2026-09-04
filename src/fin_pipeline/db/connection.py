@@ -1,8 +1,8 @@
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from fin_pipeline.config.settings import DB_ENDPOINT, DB_AUTH
+from fin_pipeline.config.settings import DB_AUTH
 from fin_pipeline.db.db import initialize_schema, surreal_query, surreal_rpc
 from fin_pipeline.utils.db_utils import quote_record_id
 
@@ -60,7 +60,7 @@ def _surrealql_literal(value):
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, datetime):
-        utc_dt = value.astimezone(timezone.utc)
+        utc_dt = value.astimezone(UTC)
         return f"d'{utc_dt.strftime('%Y-%m-%dT%H:%M:%SZ')}'"
     if isinstance(value, str):
         iso_like = re.match(
@@ -103,7 +103,7 @@ class _HttpSurrealConnection:
             if field_name in payload:
                 payload[field_name] = _serialize_metadata_map(payload[field_name])
         if "updatedAt" not in payload or payload["updatedAt"] is None:
-            payload["updatedAt"] = datetime.now(timezone.utc)
+            payload["updatedAt"] = datetime.now(UTC)
 
         quoted_record_id = quote_record_id(record_id)
         query = f"UPSERT {quoted_record_id} CONTENT {_surrealql_literal(payload)};"

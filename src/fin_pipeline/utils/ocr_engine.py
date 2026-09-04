@@ -1,9 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pymupdf  # PyMuPDF
 import pytesseract
-from pdf2image import convert_from_path
-from PIL import Image
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger as log
+from PIL import Image
 
 
 def _process_page(file_path: str, page_num: int) -> tuple[int, str]:
@@ -21,7 +21,13 @@ def _process_page(file_path: str, page_num: int) -> tuple[int, str]:
 
             text = pytesseract.image_to_string(gray_img)
             return page_num, text
-    except Exception as e:
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        pytesseract.TesseractError,
+        pytesseract.TesseractNotFoundError,
+    ) as e:
         log.warning(f"OCR failed for page {page_num + 1} in {file_path}: {e}")
         return page_num, ""
 
@@ -56,6 +62,6 @@ def extract_text_via_ocr(file_path: str, max_workers: int = 4) -> str:
 
         return "\n".join(texts)
 
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         log.warning(f"OCR failed for document {file_path}: {e}")
         return ""

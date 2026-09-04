@@ -1,19 +1,19 @@
 import re
 from collections.abc import Iterable
-from typing import Any, Dict, Optional
+from typing import Any
 
 import camelot
 import pymupdf4llm
 from pypdf import PdfReader
 
-from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
 from fin_pipeline.utils.metadata import (
     extract_metadata_from_text,
     set_field_candidate,
 )
+from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
 
 
-def _clean_metadata_value(value: Optional[str]) -> Optional[str]:
+def _clean_metadata_value(value: str | None) -> str | None:
     """Normalize whitespace and common PDF noise in extracted metadata values."""
     if value is None:
         return None
@@ -24,7 +24,7 @@ def _clean_metadata_value(value: Optional[str]) -> Optional[str]:
 
 def _extract_pdf_metadata_from_properties(
     reader: PdfReader,
-) -> Dict[str, Optional[str]]:
+) -> dict[str, str | None]:
     """Extract metadata from PDF document properties.
 
     Attempts to read metadata embedded by the PDF creator.
@@ -40,21 +40,21 @@ def _extract_pdf_metadata_from_properties(
                 normalized[key.lower()] = value.strip()
 
         return normalized
-    except Exception:
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
         return {}
 
 
 def extract_filing_metadata(
     text: str,
-    reader: Optional[PdfReader] = None,
-    company_text: Optional[str] = None,
-) -> Dict[str, Any]:
+    reader: PdfReader | None = None,
+    company_text: str | None = None,
+) -> dict[str, Any]:
     """Extract company and reporting-period metadata from PDF.
 
     Attempts multiple extraction strategies with confidence tracking so callers can
     understand where each field was sourced from.
     """
-    candidate_map: Dict[str, Dict[str, Any]] = {}
+    candidate_map: dict[str, dict[str, Any]] = {}
 
     if reader:
         props = _extract_pdf_metadata_from_properties(reader)
@@ -94,7 +94,7 @@ def extract_filing_metadata(
                 text_metadata.get("metadataConfidence", {}).get(field, 0.8),
             )
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         k: None
         for k in [
             "stockName",
@@ -108,8 +108,8 @@ def extract_filing_metadata(
             "sedol",
         ]
     }
-    metadata_sources: Dict[str, str] = {}
-    metadata_confidence: Dict[str, float] = {}
+    metadata_sources: dict[str, str] = {}
+    metadata_confidence: dict[str, float] = {}
 
     for field, details in candidate_map.items():
         result[field] = details["value"]
@@ -126,7 +126,7 @@ def extract_filing_metadata(
 def _clean_markdown_text(page_texts: Iterable[str]) -> str:
     """Remove repeated page furniture and normalize common PDF text artifacts."""
     pages = [[line.strip() for line in text.splitlines()] for text in page_texts]
-    line_counts: Dict[str, int] = {}
+    line_counts: dict[str, int] = {}
     for lines in pages:
         candidates = set(lines[:3] + lines[-3:])
         for line in candidates:
@@ -169,7 +169,7 @@ def _camelot_tables(file_path: str) -> list[dict]:
 
     try:
         tables = camelot.read_pdf(file_path, pages="all", flavor="lattice")
-    except Exception:
+    except (OSError, RuntimeError, TypeError, ValueError):
         tables = camelot.read_pdf(file_path, pages="all", flavor="stream")
     if not tables:
         tables = camelot.read_pdf(file_path, pages="all", flavor="stream")
@@ -210,7 +210,7 @@ def parse_pdf_layout(file_path: str) -> dict:
     reader = PdfReader(file_path)
     try:
         page_chunks = pymupdf4llm.to_markdown(file_path, page_chunks=True)
-    except Exception:
+    except (OSError, RuntimeError, TypeError, ValueError):
         ocr_text = _clean_markdown_text([extract_text_via_ocr(file_path)])
         metadata = extract_filing_metadata(ocr_text, reader)
         return {
@@ -228,7 +228,7 @@ def parse_pdf_layout(file_path: str) -> dict:
     text = _clean_markdown_text(page_texts)
     try:
         tables = _camelot_tables(file_path)
-    except Exception:
+    except (OSError, RuntimeError, TypeError, ValueError):
         tables = []
     if tables:
         text += "\n\n## Extracted Tables\n\n" + "\n\n".join(

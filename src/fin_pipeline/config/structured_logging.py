@@ -1,6 +1,7 @@
 """Structured logging utilities with prefixes for better log aggregation."""
 
 from enum import Enum
+
 from loguru import logger as log
 
 
