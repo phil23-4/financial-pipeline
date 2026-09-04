@@ -4,10 +4,10 @@
 
 The current implementation supports:
 
-- PDF ingestion with digital-native extraction and OCR fallback for scanned files
+- PDF ingestion with PyMuPDF4LLM Markdown extraction and OCR fallback when native extraction fails
 - HTML/XBRL extraction for SEC-style filings
 - Filing metadata extraction for company name, filing date, form type, exchange, and CIK
-- Table extraction into markdown-like records with page and row metadata
+- Camelot table extraction into structured Markdown records with page, row, header, and accuracy metadata
 - Graph creation for company and filing relationships in SurrealDB
 - Retry-aware database calls, connection pooling, and stale-record cleanup
 
@@ -60,6 +60,7 @@ financial-pipeline/
 │   ├── conftest.py
 │   ├── test_crawler.py
 │   ├── test_pipeline.py
+│   ├── test_pdf_parser.py
 │   ├── test_sec_edgar.py
 │   └── __init__.py
 └── .env.example (if present in your local checkout)
@@ -67,8 +68,9 @@ financial-pipeline/
 
 ## Key capabilities
 
-- **PDF ingestion**: `parse_pdf_layout()` extracts text, tables, and metadata
-- **OCR fallback**: scanned PDFs use `extract_text_via_ocr()` when native text extraction is unavailable
+- **PDF ingestion**: `parse_pdf_layout()` uses `pymupdf4llm` to preserve headings, emphasis, lists, and document structure in Markdown
+- **PDF table extraction**: `camelot-py` uses lattice extraction first and stream extraction as a fallback, producing normalized Markdown tables and string-only headers
+- **OCR fallback**: `extract_text_via_ocr()` processes PDFs when PyMuPDF4LLM cannot extract native text
 - **HTML/XBRL parsing**: `parse_html_file()` and related helpers parse document text and Inline XBRL metadata via BeautifulSoup
 - **Metadata normalization**: common fields are normalized across PDF and HTML sources:
   - `stockName`
@@ -76,7 +78,7 @@ financial-pipeline/
   - `filingType`
   - `exchange`
   - `cik`
-- **Table extraction**: table rows are converted into markdown-like text with row/page metadata
+- **Markdown cleanup**: repeated page headers and footers are removed, bullets are normalized, and spacing is consolidated
 - **Graph persistence**: ingested records can create company and filing entities and relationships in SurrealDB
 - **Pipeline resilience**: repeated network/database calls use retry logic; pooled connections are supported; stale records are cleaned before overwrite
 - **Structured logging**: `loguru` writes human-readable terminal output and JSON log files
@@ -114,12 +116,20 @@ The HTML parser reads common Inline XBRL values such as:
 
 The extraction is performed by `extract_filing_metadata()` in `src/fin_pipeline/utils/html_parser.py`.
 
+### PDF text and table extraction
+
+PDF text is extracted with `pymupdf4llm.to_markdown(..., page_chunks=True)` so page content can retain Markdown structure such as headings, bold text, and lists. Post-processing removes repeated page furniture, normalizes bullet characters, and fixes excess whitespace.
+
+Tables are extracted with Camelot using the lattice flavor first and the stream flavor when lattice extraction is unavailable. Each table includes normalized `headers`, `rowCount`, `pageNumber`, `accuracy`, and Markdown content. Table cells are whitespace-normalized and escaped for safe Markdown rendering.
+
+If native Markdown extraction fails, the parser falls back to the concurrent PyMuPDF-rendered Tesseract OCR pipeline in `extract_text_via_ocr()`.
+
 ### PDF metadata
 
 The PDF parser tries a two-step approach:
 
 1. embedded PDF properties (`reader.metadata`)
-2. regex-based extraction from the extracted text
+2. regex-based extraction from the cleaned Markdown text
 
 This includes detection for:
 
@@ -157,7 +167,12 @@ brew install tesseract poppler
 
 ### Python requirements
 
-Python 3.11+ is required.
+Python 3.11+ is required. PDF processing uses:
+
+- `pymupdf4llm` for structured Markdown text extraction
+- `camelot-py` for table extraction
+- `pypdf` for PDF metadata
+- `pytesseract`, PyMuPDF, Pillow, and `pdf2image` for OCR fallback
 
 ## Installation
 
@@ -373,6 +388,7 @@ Current tests cover:
 - crawler behavior and directory scanning
 - ingestion pipeline success paths
 - metadata extraction from HTML
+- PDF table extraction and OCR failure handling
 - SEC metadata/date handling edge cases
 - SurrealDB connection helper behavior
 - database upsert and delete logic
@@ -382,6 +398,8 @@ Current tests cover:
 This project already includes several recent improvements:
 
 - automatic metadata extraction for PDFs as well as HTML
+- PyMuPDF4LLM-based structured Markdown extraction for PDF content
+- Camelot-based table extraction with normalized headers and parsing accuracy
 - retry-aware database access with exponential backoff
 - HTTP connection pooling support for SurrealDB
 - stricter exception handling in OCR and parse workflows

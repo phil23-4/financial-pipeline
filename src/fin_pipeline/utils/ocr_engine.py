@@ -57,5 +57,5 @@ def extract_text_via_ocr(file_path: str, max_workers: int = 4) -> str:
         return "\n".join(texts)
 
     except Exception as e:
-        log.warning(f"OCR failed for page {i} in {file_path}: {e}")
+        log.warning(f"OCR failed for document {file_path}: {e}")
         return ""

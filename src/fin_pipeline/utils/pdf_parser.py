@@ -203,6 +203,7 @@ def _camelot_tables(file_path: str) -> list[dict]:
         if not any(headers):
             headers = [f"Column {column + 1}" for column in range(width)]
         body = rows[1:]
+        parsing_report = getattr(table, "parsing_report", {}) or {}
         markdown_rows = [
             "| " + " | ".join(headers) + " |",
             "| " + " | ".join("---" for _ in headers) + " |",
@@ -214,7 +215,7 @@ def _camelot_tables(file_path: str) -> list[dict]:
                 "pageNumber": int(table.page) if table.page else None,
                 "headers": [str(header) for header in headers],
                 "rowCount": len(body),
-                "accuracy": float(table.accuracy) if table.accuracy else None,
+                "accuracy": parsing_report.get("accuracy"),
                 "markdown": "\n".join(markdown_rows),
             }
         )
