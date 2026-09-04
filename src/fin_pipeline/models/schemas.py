@@ -9,6 +9,7 @@ class DocumentTableSchema(BaseModel):
     pageNumber: Optional[int] = None
     headers: Optional[List[str]] = None
     rowCount: Optional[int] = None
+    accuracy: Optional[float] = None
     markdown: Optional[str] = None
 
 

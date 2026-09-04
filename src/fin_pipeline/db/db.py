@@ -235,6 +235,7 @@ DEFINE FIELD IF NOT EXISTS documentTables[*].sheetName   ON TABLE exchange_filin
 DEFINE FIELD IF NOT EXISTS documentTables[*].pageNumber  ON TABLE exchange_filing TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS documentTables[*].headers     ON TABLE exchange_filing TYPE option<array<string>>;
 DEFINE FIELD IF NOT EXISTS documentTables[*].rowCount    ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS documentTables[*].accuracy    ON TABLE exchange_filing TYPE option<float>;
 DEFINE FIELD IF NOT EXISTS documentTables[*].markdown    ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS documentTableCnt     ON TABLE exchange_filing TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS documentStatus       ON TABLE exchange_filing TYPE option<string>;

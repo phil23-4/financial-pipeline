@@ -115,15 +115,18 @@ def extract_filing_metadata(
             }
 
     result: Dict[str, Any] = {
-        "stockName": None,
-        "filingDate": None,
-        "filingType": None,
-        "exchange": None,
-        "cik": None,
-        "lei": None,
-        "isin": None,
-        "cusip": None,
-        "sedol": None,
+        k: None
+        for k in [
+            "stockName",
+            "filingDate",
+            "filingType",
+            "exchange",
+            "cik",
+            "lei",
+            "isin",
+            "cusip",
+            "sedol",
+        ]
     }
     metadata_sources: Dict[str, str] = {}
     metadata_confidence: Dict[str, float] = {}
