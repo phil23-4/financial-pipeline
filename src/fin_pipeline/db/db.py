@@ -167,7 +167,7 @@ def upsert_batch_with_retry(
             )
             try:
                 LOG_DIR.mkdir(exist_ok=True)
-                with open(LOG_DIR / "hkex_failed.sql", "a", encoding="utf-8") as fh:
+                with open(LOG_DIR / "pipeline_failed.sql", "a", encoding="utf-8") as fh:
                     fh.write(
                         "-- FAILED @ "
                         + datetime.now().strftime("%Y-%m-%d %H:%M:%S")

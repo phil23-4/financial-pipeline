@@ -1,15 +1,16 @@
 import re
-import pdfplumber
+from collections.abc import Iterable
 from typing import Any, Dict, Optional
 
+import camelot
+import pymupdf4llm
 from pypdf import PdfReader
 
+from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
 from fin_pipeline.utils.metadata import (
     extract_metadata_from_text,
-    merge_metadata_candidates,
     set_field_candidate,
 )
-from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
 
 
 def _clean_metadata_value(value: Optional[str]) -> Optional[str]:
@@ -139,88 +140,121 @@ def extract_filing_metadata(
     return result
 
 
+def _clean_markdown_text(page_texts: Iterable[str]) -> str:
+    """Remove repeated page furniture and normalize common PDF text artifacts."""
+    pages = [[line.strip() for line in text.splitlines()] for text in page_texts]
+    line_counts: Dict[str, int] = {}
+    for lines in pages:
+        candidates = set(lines[:3] + lines[-3:])
+        for line in candidates:
+            if line and len(line) < 160:
+                line_counts[line] = line_counts.get(line, 0) + 1
+
+    repeated = {
+        line for line, count in line_counts.items() if count >= 2 and len(pages) > 1
+    }
+    cleaned_pages = []
+    for lines in pages:
+        cleaned = []
+        for line in lines:
+            if line in repeated:
+                continue
+            line = re.sub(r"^[\u2022\u2023\u25e6\u2043]\s*", "- ", line)
+            line = re.sub(r"^(?:o|▪|◦)\s+", "- ", line)
+            line = re.sub(r"[ \t]+", " ", line).strip()
+            cleaned.append(line)
+
+        while cleaned and not cleaned[0]:
+            cleaned.pop(0)
+        while cleaned and not cleaned[-1]:
+            cleaned.pop()
+        cleaned_pages.append("\n".join(cleaned))
+
+    markdown = "\n\n".join(page for page in cleaned_pages if page)
+    markdown = re.sub(r"\n{3,}", "\n\n", markdown)
+    return markdown.strip()
+
+
+def _cell_text(value: Any) -> str:
+    text = "" if value is None else str(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.replace("|", "\\|")
+
+
+def _camelot_tables(file_path: str) -> list[dict]:
+    """Extract tables with Camelot, preferring ruled tables over text tables."""
+
+    try:
+        tables = camelot.read_pdf(file_path, pages="all", flavor="lattice")
+    except Exception:
+        tables = camelot.read_pdf(file_path, pages="all", flavor="stream")
+    if not tables:
+        tables = camelot.read_pdf(file_path, pages="all", flavor="stream")
+
+    extracted = []
+    for index, table in enumerate(tables):
+        rows = [[_cell_text(cell) for cell in row] for row in table.df.values.tolist()]
+        rows = [row for row in rows if any(row)]
+        if not rows:
+            continue
+        width = max(len(row) for row in rows)
+        rows = [row + [""] * (width - len(row)) for row in rows]
+        headers = rows[0]
+        if not any(headers):
+            headers = [f"Column {column + 1}" for column in range(width)]
+        body = rows[1:]
+        markdown_rows = [
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join("---" for _ in headers) + " |",
+        ]
+        markdown_rows.extend("| " + " | ".join(row) + " |" for row in body)
+        extracted.append(
+            {
+                "tableIndex": index,
+                "pageNumber": int(table.page) if table.page else None,
+                "headers": [str(header) for header in headers],
+                "rowCount": len(body),
+                "accuracy": float(table.accuracy) if table.accuracy else None,
+                "markdown": "\n".join(markdown_rows),
+            }
+        )
+    return extracted
+
+
 def parse_pdf_layout(file_path: str) -> dict:
-    """Extract text, tables, and metadata from a PDF."""
-    extracted_text = []
-    extracted_tables = []
-    table_cnt = 0
-
+    """Extract LLM-friendly Markdown text and structured Camelot tables from a PDF."""
     reader = PdfReader(file_path)
-
-    # extract_text() may return None for scanned or malformed pages.
-    is_digital = any((page.extract_text() or "").strip() for page in reader.pages[:2])
-
-    if is_digital:
-        with pdfplumber.open(file_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text()
-                if text:
-                    extracted_text.append(text)
-
-                # Two-pass extraction: Attempt default grid extraction first;
-                # fallback to 'text' strategy for borderless/stylized annual report tables
-                tables = page.extract_tables()
-                if not tables:
-                    tables = page.extract_tables(
-                        {"vertical_strategy": "text", "horizontal_strategy": "text"}
-                    )
-
-                for table in tables or []:
-                    # Filter out empty or broken table structures safely
-                    valid_rows = [
-                        r for r in table if r and any(cell is not None for cell in r)
-                    ]
-                    if not valid_rows:
-                        continue
-
-                    # Safe column length estimation using valid rows
-                    num_cols = max(len(r) for r in valid_rows)
-                    headers = [str(c).strip() if c else "" for c in valid_rows[0]]
-
-                    rows = [
-                        "| "
-                        + " | ".join(
-                            [
-                                str(cell).replace("\n", " ").strip() if cell else ""
-                                for cell in r
-                            ]
-                        )
-                        + " |"
-                        for r in valid_rows
-                    ]
-
-                    # Insert Markdown table delimiter row safely
-                    rows.insert(1, "| " + " | ".join(["---"] * num_cols) + " |")
-
-                    extracted_tables.append(
-                        {
-                            "tableIndex": table_cnt,
-                            "pageNumber": page_num,
-                            "headers": headers,
-                            "rowCount": len(valid_rows) - 1,
-                            "markdown": "\n".join(rows),
-                        }
-                    )
-                    table_cnt += 1
-
-        full_text = "\n".join(extracted_text)
-        metadata = extract_filing_metadata(full_text, reader)
-
+    try:
+        page_chunks = pymupdf4llm.to_markdown(file_path, page_chunks=True)
+    except Exception:
+        ocr_text = _clean_markdown_text([extract_text_via_ocr(file_path)])
+        metadata = extract_filing_metadata(ocr_text, reader)
         return {
-            "text": full_text,
-            "tables": extracted_tables,
-            "table_cnt": table_cnt,
-            "reason": "Digital Native",
+            "text": ocr_text,
+            "tables": [],
+            "table_cnt": 0,
+            "reason": "OCR Scanner Fallback",
             **metadata,
         }
 
-    ocr_text = extract_text_via_ocr(file_path)
-    metadata = extract_filing_metadata(ocr_text, reader)
-
+    if isinstance(page_chunks, str):
+        page_texts = [page_chunks]
+    else:
+        page_texts = [chunk.get("text", "") for chunk in page_chunks]
+    text = _clean_markdown_text(page_texts)
+    try:
+        tables = _camelot_tables(file_path)
+    except Exception:
+        tables = []
+    if tables:
+        text += "\n\n## Extracted Tables\n\n" + "\n\n".join(
+            table["markdown"] for table in tables
+        )
+    metadata = extract_filing_metadata(text, reader)
     return {
-        "text": ocr_text,
-        "tables": [],
-        "table_cnt": 0,
-        "reason": "OCR Scanner Fallback",
+        "text": text,
+        "tables": tables,
+        "table_cnt": len(tables),
+        "reason": "PyMuPDF4LLM + Camelot" if tables else "PyMuPDF4LLM",
         **metadata,
     }
