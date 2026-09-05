@@ -53,7 +53,6 @@ financial-pipeline/
 │           ├── crypto.py
 │           ├── db_utils.py
 │           ├── html_parser.py
-│           ├── ocr_engine.py
 │           ├── pdf_parser.py
 │           └── retry.py
 ├── tests/
@@ -70,7 +69,7 @@ financial-pipeline/
 
 - **PDF ingestion**: `parse_pdf_layout()` uses `pymupdf4llm` to preserve headings, emphasis, lists, and document structure in Markdown
 - **PDF table extraction**: `camelot-py` uses lattice extraction first and stream extraction as a fallback, producing normalized Markdown tables and string-only headers
-- **OCR fallback**: `extract_text_via_ocr()` processes PDFs when PyMuPDF4LLM cannot extract native text
+- **Native hybrid OCR**: PyMuPDF4LLM automatically detects scanned or incomplete text layers and uses its RapidOCR/Tesseract callback while preserving layout
 - **HTML/XBRL parsing**: `parse_html_file()` and related helpers parse document text and Inline XBRL metadata via BeautifulSoup
 - **Metadata normalization**: common fields are normalized across PDF and HTML sources:
   - `stockName`
@@ -119,11 +118,11 @@ The extraction is performed by `extract_filing_metadata()` in `src/fin_pipeline/
 
 ### PDF text and table extraction
 
-PDF text is extracted with `pymupdf4llm.to_markdown(..., page_chunks=True)` so page content can retain Markdown structure such as headings, bold text, and lists. Post-processing removes repeated page furniture, normalizes bullet characters, and fixes excess whitespace.
+PDF text is extracted with `pymupdf4llm.to_markdown(..., page_chunks=True)` so page content can retain Markdown structure such as headings, bold text, and lists. PyMuPDF4LLM's native hybrid OCR uses `rapidtess_api.exec_ocr` for scanned or incomplete text layers. Post-processing removes repeated page furniture, normalizes bullet characters, and fixes excess whitespace.
 
 Tables are extracted with Camelot using the lattice flavor first and the stream flavor when lattice extraction is unavailable. Each table includes normalized `headers`, `rowCount`, `pageNumber`, `accuracy`, and Markdown content. Table cells are whitespace-normalized and escaped for safe Markdown rendering.
 
-If native Markdown extraction fails, the parser falls back to the concurrent PyMuPDF-rendered Tesseract OCR pipeline in `extract_text_via_ocr()`.
+Use `parse_pdf_layout(path, force_ocr=True)` to bypass an unreliable native text layer and force OCR. PDF metadata is read from the same `pymupdf.Document` used for Markdown extraction, avoiding duplicate PDF I/O.
 
 ### PDF metadata
 
@@ -181,18 +180,18 @@ Ticker and exchange cannot be inferred reliably from this layout, so they remain
 
 ### System dependencies
 
-The project expects OCR-related system packages to be installed on the host machine.
+The project expects Tesseract OCR to be installed on the host machine. RapidOCR is installed as a Python dependency.
 
 For Ubuntu/Debian:
 
 ```bash
-sudo apt-get update && sudo apt-get install -y tesseract-ocr poppler-utils
+sudo apt-get update && sudo apt-get install -y tesseract-ocr
 ```
 
 For macOS with Homebrew:
 
 ```bash
-brew install tesseract poppler
+brew install tesseract
 ```
 
 ### Python requirements
@@ -201,8 +200,8 @@ Python 3.11+ is required. PDF processing uses:
 
 - `pymupdf4llm` for structured Markdown text extraction
 - `camelot-py` for table extraction
-- `pypdf` for PDF metadata
-- `pytesseract`, PyMuPDF, Pillow, and `pdf2image` for OCR fallback
+- PyMuPDF for PDF metadata and document access
+- `rapidocr-onnxruntime` and the system Tesseract installation for hybrid OCR
 
 ## Installation
 

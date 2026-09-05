@@ -3,27 +3,19 @@ from collections.abc import Iterable
 from typing import Any
 
 import camelot
+import pymupdf
 import pymupdf4llm
-from pypdf import PdfReader
+from pymupdf4llm.helpers.document_layout import OCRMode
+from pymupdf4llm.ocr import rapidtess_api
 
 from fin_pipeline.utils.metadata import (
     extract_metadata_from_text,
     set_field_candidate,
 )
-from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
-
-
-def _clean_metadata_value(value: str | None) -> str | None:
-    """Normalize whitespace and common PDF noise in extracted metadata values."""
-    if value is None:
-        return None
-    cleaned = str(value).strip().replace("\u00a0", " ")
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned or None
 
 
 def _extract_pdf_metadata_from_properties(
-    reader: PdfReader,
+    reader: pymupdf.Document,
 ) -> dict[str, str | None]:
     """Extract metadata from PDF document properties.
 
@@ -46,7 +38,7 @@ def _extract_pdf_metadata_from_properties(
 
 def extract_filing_metadata(
     text: str,
-    reader: PdfReader | None = None,
+    reader: pymupdf.Document | None = None,
     company_text: str | None = None,
 ) -> dict[str, Any]:
     """Extract company and reporting-period metadata from PDF.
@@ -205,42 +197,38 @@ def _camelot_tables(file_path: str) -> list[dict]:
     return extracted
 
 
-def parse_pdf_layout(file_path: str) -> dict:
-    """Extract LLM-friendly Markdown text and structured Camelot tables from a PDF."""
-    reader = PdfReader(file_path)
-    try:
-        page_chunks = pymupdf4llm.to_markdown(file_path, page_chunks=True)
-    except (OSError, RuntimeError, TypeError, ValueError):
-        ocr_text = _clean_markdown_text([extract_text_via_ocr(file_path)])
-        metadata = extract_filing_metadata(ocr_text, reader)
-        return {
-            "text": ocr_text,
-            "tables": [],
-            "table_cnt": 0,
-            "reason": "OCR Scanner Fallback",
-            **metadata,
-        }
-
-    if isinstance(page_chunks, str):
-        page_texts = [page_chunks]
-    else:
-        page_texts = [chunk.get("text", "") for chunk in page_chunks]
-    text = _clean_markdown_text(page_texts)
-    try:
-        tables = _camelot_tables(file_path)
-    except (OSError, RuntimeError, TypeError, ValueError):
-        tables = []
-    if tables:
-        text += "\n\n## Extracted Tables\n\n" + "\n\n".join(
-            table["markdown"] for table in tables
+def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
+    """Extract Markdown, tables, and metadata using native PyMuPDF4LLM OCR."""
+    with pymupdf.open(file_path) as doc:
+        page_chunks = pymupdf4llm.to_markdown(
+            doc,
+            page_chunks=True,
+            use_ocr=OCRMode.SELECT_REMOVING_OLD,
+            force_ocr=force_ocr,
+            ocr_function=rapidtess_api.exec_ocr,
         )
-    metadata = extract_filing_metadata(
-        text, reader, company_text="\n".join(page_texts[:3])
-    )
+
+        if isinstance(page_chunks, str):
+            page_texts = [page_chunks]
+        else:
+            page_texts = [chunk.get("text", "") for chunk in page_chunks]
+        text = _clean_markdown_text(page_texts)
+        try:
+            tables = _camelot_tables(file_path)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            tables = []
+        if tables:
+            text += "\n\n## Extracted Tables\n\n" + "\n\n".join(
+                table["markdown"] for table in tables
+            )
+        metadata = extract_filing_metadata(
+            text, doc, company_text="\n".join(page_texts[:3])
+        )
+
     return {
         "text": text,
         "tables": tables,
         "table_cnt": len(tables),
-        "reason": "PyMuPDF4LLM + Camelot" if tables else "PyMuPDF4LLM",
+        "reason": "PyMuPDF4LLM + native hybrid OCR" if force_ocr else "PyMuPDF4LLM",
         **metadata,
     }

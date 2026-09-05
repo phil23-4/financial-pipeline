@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 from fin_pipeline.models.schemas import ExchangeFilingModel
 from fin_pipeline.utils.metadata import extract_metadata_from_text
-from fin_pipeline.utils.ocr_engine import extract_text_via_ocr
 from fin_pipeline.utils.pdf_parser import _camelot_tables, parse_pdf_layout
 
 
@@ -56,9 +55,9 @@ def test_metadata_rejects_narrative_company_match():
 
 
 def test_pdf_parser_returns_metadata_without_tables():
-    reader = SimpleNamespace(metadata={})
+    document = SimpleNamespace(metadata={})
     with (
-        patch("fin_pipeline.utils.pdf_parser.PdfReader", return_value=reader),
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
         patch(
             "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
             return_value=[{"text": "Annual Report\n2023"}],
@@ -69,15 +68,32 @@ def test_pdf_parser_returns_metadata_without_tables():
             return_value={"filingType": "Annual Report"},
         ),
     ):
+        open_pdf.return_value.__enter__.return_value = document
         result = parse_pdf_layout("report.pdf")
 
     assert result["tables"] == []
     assert result["table_cnt"] == 0
     assert result["filingType"] == "Annual Report"
+    open_pdf.assert_called_once_with("report.pdf")
 
 
-def test_ocr_returns_empty_string_when_document_cannot_open():
-    with patch(
-        "fin_pipeline.utils.ocr_engine.pymupdf.open", side_effect=OSError("bad PDF")
+def test_pdf_parser_passes_force_ocr_and_native_callback():
+    document = SimpleNamespace(metadata={})
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            return_value=[{"text": "Scanned report"}],
+        ) as to_markdown,
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables", return_value=[]),
+        patch(
+            "fin_pipeline.utils.pdf_parser.extract_metadata_from_text",
+            return_value={},
+        ),
     ):
-        assert extract_text_via_ocr("report.pdf") == ""
+        open_pdf.return_value.__enter__.return_value = document
+        parse_pdf_layout("report.pdf", force_ocr=True)
+
+    assert to_markdown.call_args.kwargs["force_ocr"] is True
+    assert to_markdown.call_args.kwargs["ocr_function"]
+    assert to_markdown.call_args.args[0] is document
