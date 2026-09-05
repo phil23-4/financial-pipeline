@@ -34,6 +34,62 @@ def test_camelot_tables_uses_parsing_report_accuracy():
     assert record["documentTables"][0]["accuracy"] == 97.5
 
 
+def test_camelot_tables_falls_back_to_stream_and_normalizes_cells():
+    lattice = patch(
+        "fin_pipeline.utils.pdf_parser.camelot.read_pdf",
+        side_effect=[
+            RuntimeError("lattice unavailable"),
+            [
+                SimpleNamespace(
+                    df=SimpleNamespace(
+                        values=SimpleNamespace(
+                            tolist=lambda: [[None, "Value | Total"], [" Cash ", "10\n"]]
+                        )
+                    ),
+                    page="3",
+                    parsing_report={},
+                )
+            ],
+        ],
+    )
+
+    with lattice as read_pdf:
+        result = _camelot_tables("report.pdf")
+
+    assert read_pdf.call_count == 2
+    assert result[0]["headers"] == ["", "Value \\| Total"]
+    assert result[0]["rowCount"] == 1
+    assert result[0]["accuracy"] is None
+    assert "| Cash | 10 |" in result[0]["markdown"]
+
+
+def test_camelot_tables_skips_empty_tables():
+    table = SimpleNamespace(
+        df=SimpleNamespace(
+            values=SimpleNamespace(tolist=lambda: [[None, ""], ["", None]])
+        ),
+        page="1",
+        parsing_report={"accuracy": 10.0},
+    )
+
+    with patch("fin_pipeline.utils.pdf_parser.camelot.read_pdf", return_value=[table]):
+        assert _camelot_tables("report.pdf") == []
+
+
+def test_pdf_properties_keep_higher_confidence_than_text_metadata():
+    document = SimpleNamespace(metadata={"title": "Apple Inc.", "subject": "10-K"})
+
+    result = __import__(
+        "fin_pipeline.utils.pdf_parser", fromlist=["extract_filing_metadata"]
+    ).extract_filing_metadata(
+        "Apple Corporation 10-K",
+        document,
+    )
+
+    assert result["stockName"] == "Apple Inc."
+    assert result["metadataSources"]["stockName"] == "pdf_properties"
+
+
 def test_metadata_prefers_labeled_company_name_from_early_pages():
     result = extract_metadata_from_text(
         "Accessories includes Apple-branded products. Apple",

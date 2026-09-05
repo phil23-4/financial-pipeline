@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fin_pipeline.config.constants import (
@@ -94,7 +94,11 @@ def _normalize_html_date(value: str) -> str | None:
     normalized_date = re.sub(r"\s+", " ", normalized_date).strip()
     normalized_date = re.sub(r"\s*,\s*", ", ", normalized_date)
     try:
-        return datetime.strptime(normalized_date, "%B %d, %Y").strftime("%Y-%m-%d")
+        return (
+            datetime.strptime(normalized_date, "%B %d, %Y")
+            .replace(tzinfo=UTC)
+            .strftime("%Y-%m-%d")
+        )
     except ValueError:
         return None
 

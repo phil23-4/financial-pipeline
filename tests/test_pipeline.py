@@ -28,6 +28,7 @@ async def test_successful_pipeline_ingestion(
                 "pageNumber": 1,
                 "headers": ["Asset", "Value"],
                 "rowCount": 1,
+                "accuracy": 96.5,
                 "markdown": "| A | B |",
             }
         ],
@@ -60,6 +61,7 @@ async def test_successful_pipeline_ingestion(
     assert called_payload["companyTicker"] == "XYZ"
     assert called_payload["documentStatus"] == "PROCESSED"
     assert called_payload["documentTableCnt"] == 1
+    assert called_payload["documentTables"][0]["accuracy"] == 96.5
 
     # Verify graph edge constructor call was dispatched safely
     mock_graph_rel.assert_called_once()
@@ -154,10 +156,12 @@ async def test_surreal_connection_uses_helper_adapter(mock_http_conn):
     mock_db = AsyncMock()
     mock_http_conn.return_value = mock_db
 
-    async with SurrealConnection() as db:
-        assert db is mock_db
+    with patch("fin_pipeline.db.connection.initialize_schema") as mock_schema:
+        async with SurrealConnection() as db:
+            assert db is mock_db
 
     mock_http_conn.assert_called_once()
+    mock_schema.assert_called_once()
     mock_db.connect.assert_awaited_once()
     mock_db.signin.assert_awaited_once_with(
         {

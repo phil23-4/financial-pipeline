@@ -4,7 +4,7 @@
 
 The current implementation supports:
 
-- PDF ingestion with PyMuPDF4LLM Markdown extraction and OCR fallback when native extraction fails
+- PDF ingestion with PyMuPDF4LLM Markdown extraction and native hybrid OCR
 - HTML/XBRL extraction for SEC-style filings
 - Filing metadata extraction for company name, filing date, form type, exchange, and CIK
 - Camelot table extraction into structured Markdown records with page, row, header, and accuracy metadata
@@ -58,6 +58,7 @@ financial-pipeline/
 ├── tests/
 │   ├── conftest.py
 │   ├── test_crawler.py
+│   ├── test_cli.py
 │   ├── test_pipeline.py
 │   ├── test_pdf_parser.py
 │   ├── test_sec_edgar.py
@@ -69,7 +70,7 @@ financial-pipeline/
 
 - **PDF ingestion**: `parse_pdf_layout()` uses `pymupdf4llm` to preserve headings, emphasis, lists, and document structure in Markdown
 - **PDF table extraction**: `camelot-py` uses lattice extraction first and stream extraction as a fallback, producing normalized Markdown tables and string-only headers
-- **Native hybrid OCR**: PyMuPDF4LLM automatically detects scanned or incomplete text layers and uses its RapidOCR/Tesseract callback while preserving layout
+- **Native hybrid OCR**: PyMuPDF4LLM automatically detects scanned or incomplete text layers and uses `rapidtess_api.exec_ocr`, combining RapidOCR region detection with Tesseract recognition while preserving layout
 - **HTML/XBRL parsing**: `parse_html_file()` and related helpers parse document text and Inline XBRL metadata via BeautifulSoup
 - **Metadata normalization**: common fields are normalized across PDF and HTML sources:
   - `stockName`
@@ -128,7 +129,7 @@ Use `parse_pdf_layout(path, force_ocr=True)` to bypass an unreliable native text
 
 The PDF parser tries a two-step approach:
 
-1. embedded PDF properties (`reader.metadata`)
+1. embedded PDF properties (`pymupdf.Document.metadata`)
 2. regex-based extraction from the cleaned Markdown text
 
 This includes detection for:
@@ -423,6 +424,9 @@ Current tests cover:
 - ingestion pipeline success paths
 - metadata extraction from HTML
 - PDF table extraction and OCR failure handling
+- Camelot stream fallback, empty-table filtering, and cell normalization
+- native OCR callback and `force_ocr` configuration
+- CLI metadata arguments and required-option validation
 - SEC metadata/date handling edge cases
 - SurrealDB connection helper behavior
 - database upsert and delete logic
@@ -440,6 +444,7 @@ This project already includes several recent improvements:
 - retry-aware database access with exponential backoff
 - HTTP connection pooling support for SurrealDB
 - stricter exception handling in OCR and parse workflows
+- database-dependent connection tests isolate schema initialization from live SurrealDB
 - centralized shared DB ID quoting utility
 - updated logging and serialization behaviors
 - improved handling for SEC filing edge cases and partial writes

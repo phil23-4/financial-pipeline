@@ -30,6 +30,42 @@ def test_scan_directory_parses_local_filing_path_and_filename(tmp_path):
     assert result["metadataSources"]["stockName"] == "parent_directory"
 
 
+@pytest.mark.parametrize("report_code", ["annual_report", "annual-report"])
+def test_scan_directory_accepts_annual_report_filename_variants(tmp_path, report_code):
+    report_dir = tmp_path / "romania" / "Banca Transilvania"
+    report_dir.mkdir(parents=True)
+    (report_dir / f"131662.{report_code}.en.2018.pdf").write_bytes(b"%PDF-1.4")
+
+    result = next(iter(scan_directory(str(tmp_path))))[1]
+
+    assert result["stockCode"] == "131662"
+    assert result["filingType"] == "ANNUAL_REPORT"
+    assert result["filingDate"] == "2018-12-31"
+
+
+def test_scan_directory_retains_defaults_for_unstructured_filename(tmp_path):
+    report_dir = tmp_path / "romania" / "Banca Transilvania"
+    report_dir.mkdir(parents=True)
+    (report_dir / "annual-report.pdf").write_bytes(b"%PDF-1.4")
+
+    result = next(iter(scan_directory(str(tmp_path))))[1]
+
+    assert result["stockName"] == "Banca Transilvania"
+    assert result["stockCode"] == "UNKNOWN"
+    assert result["filingType"] == "ANNUAL_REPORT"
+    assert result["filingDate"] is None
+
+
+def test_scan_directory_ignores_non_pdf_files(tmp_path):
+    (tmp_path / "report.pdf").write_bytes(b"%PDF-1.4")
+    (tmp_path / "notes.txt").write_text("not a filing")
+
+    results = list(scan_directory(str(tmp_path)))
+
+    assert len(results) == 1
+    assert results[0][0].endswith("report.pdf")
+
+
 def test_scan_sec_edgar_html_directory_keeps_each_accession(tmp_path):
     first = tmp_path / "sec-edgar-filings" / "BAC" / "10-K" / "0000000001-22-000001"
     second = tmp_path / "sec-edgar-filings" / "BAC" / "10-K" / "0000000001-23-000001"
