@@ -44,7 +44,9 @@ data/
 *.pdf
 
 *csv
+data/analytics_data/
 
 DATA_MAPPING_RECOMMENDATION.md
 IMPLEMENTATION_SUMMARY.md
 README copy.md
+Modelfile
