@@ -51,9 +51,59 @@ def extract_filing_metadata(
     if reader:
         props = _extract_pdf_metadata_from_properties(reader)
         if props.get("title"):
-            set_field_candidate(
-                candidate_map, "stockName", props["title"], "pdf_properties", 0.88
+            title = props["title"]
+            title_metadata = extract_metadata_from_text(
+                title, "pdf_title_fallback", company_text=company_text or title
             )
+            report_title_match = re.search(
+                r"(?i)\b(?:annual report|integrated report|sustainability report|esg report)\b",
+                title,
+            )
+            legal_title_match = re.search(
+                r"(?i)\b(?:inc\.?|corp\.?|limited|ltd\.?|group|holdings|plc|ag|gmbh|sa|s\.a\.|bhd\.|pte\.?|llc)\b",
+                title,
+            )
+            if title_metadata.get("stockName"):
+                if report_title_match:
+                    set_field_candidate(
+                        candidate_map,
+                        "stockName",
+                        title_metadata["stockName"],
+                        "pdf_properties",
+                        0.82,
+                    )
+                elif legal_title_match:
+                    set_field_candidate(
+                        candidate_map,
+                        "stockName",
+                        title,
+                        "pdf_properties",
+                        0.88,
+                    )
+            elif not report_title_match or legal_title_match:
+                set_field_candidate(
+                    candidate_map,
+                    "stockName",
+                    title,
+                    "pdf_properties",
+                    0.88 if legal_title_match else 0.68,
+                )
+            if title_metadata.get("filingType"):
+                set_field_candidate(
+                    candidate_map,
+                    "filingType",
+                    title_metadata["filingType"],
+                    "pdf_properties",
+                    0.8,
+                )
+            if title_metadata.get("exchange"):
+                set_field_candidate(
+                    candidate_map,
+                    "exchange",
+                    title_metadata["exchange"],
+                    "pdf_properties",
+                    0.72,
+                )
         if props.get("subject"):
             set_field_candidate(
                 candidate_map, "filingType", props["subject"], "pdf_properties", 0.82

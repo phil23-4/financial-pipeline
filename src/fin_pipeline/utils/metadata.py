@@ -67,6 +67,30 @@ def _normalize_filing_type(filing_type: str) -> str:
     return text.title() if "report" in text.lower() else text.upper()
 
 
+def _extract_cover_page_company_name(text: str) -> str | None:
+    """Extra heuristics for annual/integrated/ESG report cover pages."""
+    patterns = [
+        r"(?im)^(?:company|issuer|registrant|entity|group)\s*(?:name|profile)?\s*[:\-]\s*(.+)$",
+        r"(?im)^([A-Z][A-Za-z0-9&.,'()\- /]{3,120})\s+(?:annual report|integrated report|sustainability report|esg report)(?:\s+(?:and accounts|for the year|for fiscal year|fy\d{2,4}|\d{4}))?(?:\s*[-:])?$",
+        r"(?im)^(?:report\s+by\s+|annual report\s+by\s+|integrated report\s+by\s+|sustainability report\s+by\s+)([A-Z][A-Za-z0-9&.,'()\- /]{3,120})$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            candidate = match.group(1).strip(" -:|")
+            candidate = re.sub(r"\s+[-–—:]\s*$", "", candidate)
+            candidate = re.sub(r"\s+\d{4}\s*$", "", candidate)
+            candidate = re.sub(
+                r"\s+(?:annual report|integrated report|sustainability report|esg report)\s*$",
+                "",
+                candidate,
+                flags=re.IGNORECASE,
+            )
+            if 3 <= len(candidate) <= 120:
+                return candidate.strip()
+    return None
+
+
 def _detect_exchange_from_text(text: str) -> str | None:
     text_lower = text.lower()
     for name, normalized in sorted(
@@ -74,6 +98,17 @@ def _detect_exchange_from_text(text: str) -> str | None:
     ):
         if re.search(rf"(?<!\w){re.escape(name.lower())}(?!\w)", text_lower):
             return normalized
+
+    symbol_match = re.search(
+        r"\b(?:NYSE|NASDAQ|LSE|ASX|TSE|HKEX|SSE|SZSE|SGX|B3|JSE|NSE|BSE|TWSE|SEHK|XETRA|FWB|BIT|PSE|MOEX)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if symbol_match:
+        symbol = symbol_match.group(0).upper()
+        for name, normalized in EXCHANGE_MAPPING.items():
+            if normalized.upper() == symbol:
+                return normalized
     return None
 
 
@@ -151,15 +186,19 @@ def extract_metadata_from_text(
         company_name = re.sub(r"[*_`]+", "", labeled_company_match.group(1)).strip()
         _set_candidate(candidates, "stockName", company_name, source, 0.92)
     else:
-        company_match = COMPANY_PATTERN.search(company_search_text)
-        if company_match:
-            company_name = company_match.group(1).strip()
-            if 3 < len(company_name) < 120 and not re.search(
-                r"\b(includes|provides|operates|reports|has|offers|was|is|are|were|providing|operating)\b",
-                company_name,
-                re.IGNORECASE,
-            ):
-                _set_candidate(candidates, "stockName", company_name, source, 0.78)
+        cover_page_company = _extract_cover_page_company_name(company_search_text)
+        if cover_page_company:
+            _set_candidate(candidates, "stockName", cover_page_company, source, 0.82)
+        else:
+            company_match = COMPANY_PATTERN.search(company_search_text)
+            if company_match:
+                company_name = company_match.group(1).strip()
+                if 3 < len(company_name) < 120 and not re.search(
+                    r"\b(includes|provides|operates|reports|has|offers|was|is|are|were|providing|operating)\b",
+                    company_name,
+                    re.IGNORECASE,
+                ):
+                    _set_candidate(candidates, "stockName", company_name, source, 0.78)
 
     exchange = _detect_exchange_from_text(text)
     if exchange:

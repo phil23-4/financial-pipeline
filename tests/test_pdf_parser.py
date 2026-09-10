@@ -110,6 +110,25 @@ def test_metadata_rejects_narrative_company_match():
     assert result["stockName"] is None
 
 
+def test_metadata_extracts_company_name_from_cover_page_title():
+    result = extract_metadata_from_text(
+        "Acme Holdings Annual Report 2024",
+        "pdf_text_regex",
+    )
+
+    assert result["stockName"] == "Acme Holdings"
+    assert result["filingType"] == "Annual Report"
+
+
+def test_pdf_parser_extracts_company_name_from_document_title_metadata():
+    document = SimpleNamespace(metadata={"title": "Northwind Group Annual Report 2024"})
+    result = __import__(
+        "fin_pipeline.utils.pdf_parser", fromlist=["extract_filing_metadata"]
+    ).extract_filing_metadata("Northwind Group Annual Report 2024", document)
+
+    assert result["stockName"] == "Northwind Group"
+
+
 def test_pdf_parser_returns_metadata_without_tables():
     document = SimpleNamespace(metadata={})
     with (
