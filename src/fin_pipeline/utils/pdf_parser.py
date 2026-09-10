@@ -1,10 +1,12 @@
 import re
 from collections.abc import Iterable
+from math import isfinite
 from typing import Any
 
 import camelot
 import pymupdf
 import pymupdf4llm
+from playa.exceptions import PDFTextExtractionNotAllowed
 from pymupdf4llm.helpers.document_layout import OCRMode
 from pymupdf4llm.ocr import rapidtess_api
 
@@ -36,6 +38,31 @@ def _extract_pdf_metadata_from_properties(
         return {}
 
 
+_GENERIC_PDF_PROPERTY_PATTERNS = (
+    r"^untitled(?: document)?$",
+    r"^adobe indesign(?: -|:)?",
+    r"^adobe acrobat(?: -|:)?",
+    r"^microsoft (?:word|office)(?: -|:)?",
+    r"^quarkxpress(?: -|:)?",
+    r"^canva(?: -|:)?",
+    r"^created with ",
+    r"^produced by ",
+)
+
+
+def _is_usable_pdf_property(value: str | None) -> bool:
+    """Reject common software/template defaults from PDF properties."""
+    if not value:
+        return False
+    normalized = re.sub(r"\s+", " ", value).strip()
+    if not normalized or len(normalized) > 240:
+        return False
+    return not any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _GENERIC_PDF_PROPERTY_PATTERNS
+    )
+
+
 def extract_filing_metadata(
     text: str,
     reader: pymupdf.Document | None = None,
@@ -50,7 +77,7 @@ def extract_filing_metadata(
 
     if reader:
         props = _extract_pdf_metadata_from_properties(reader)
-        if props.get("title"):
+        if _is_usable_pdf_property(props.get("title")):
             title = props["title"]
             title_metadata = extract_metadata_from_text(
                 title, "pdf_title_fallback", company_text=company_text or title
@@ -104,14 +131,22 @@ def extract_filing_metadata(
                     "pdf_properties",
                     0.72,
                 )
-        if props.get("subject"):
+        if _is_usable_pdf_property(props.get("subject")):
             set_field_candidate(
                 candidate_map, "filingType", props["subject"], "pdf_properties", 0.82
             )
-        if props.get("keywords"):
-            set_field_candidate(
-                candidate_map, "exchange", props["keywords"], "pdf_properties", 0.72
+        if _is_usable_pdf_property(props.get("keywords")):
+            keyword_metadata = extract_metadata_from_text(
+                props["keywords"], "pdf_property_keywords"
             )
+            if keyword_metadata.get("exchange"):
+                set_field_candidate(
+                    candidate_map,
+                    "exchange",
+                    keyword_metadata["exchange"],
+                    "pdf_properties",
+                    0.72,
+                )
 
     text_metadata = extract_metadata_from_text(
         text, "pdf_text_regex", company_text=company_text
@@ -207,7 +242,7 @@ def _cell_text(value: Any) -> str:
     if value is None:
         return ""
 
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+    if isinstance(value, float) and not isfinite(value):
         return ""
 
     text = str(value)
@@ -222,7 +257,13 @@ def _camelot_tables(file_path: str) -> list[dict]:
     for flavor in ("lattice", "stream"):
         try:
             tables = camelot.read_pdf(file_path, pages="all", flavor=flavor)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except (
+            PDFTextExtractionNotAllowed,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
             tables = []
         if tables:
             break
@@ -261,6 +302,9 @@ def _camelot_tables(file_path: str) -> list[dict]:
 def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
     """Extract Markdown, tables, and metadata using native PyMuPDF4LLM OCR."""
     warnings: list[str] = []
+    extraction_reason = (
+        "PyMuPDF4LLM + native hybrid OCR" if force_ocr else "PyMuPDF4LLM"
+    )
     with pymupdf.open(file_path) as doc:
         try:
             page_chunks = pymupdf4llm.to_markdown(
@@ -270,9 +314,27 @@ def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
                 force_ocr=force_ocr,
                 ocr_function=rapidtess_api.exec_ocr,
             )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            warnings.append(f"PyMuPDF4LLM text extraction failed: {exc}")
-            page_chunks = []
+        except (
+            pymupdf.mupdf.FzErrorArgument,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            warnings.append(f"PyMuPDF4LLM OCR extraction failed: {exc}")
+            try:
+                page_chunks = pymupdf4llm.to_markdown(
+                    doc,
+                    page_chunks=True,
+                    use_ocr=OCRMode.NEVER,
+                    force_ocr=False,
+                )
+                extraction_reason = "PyMuPDF4LLM (OCR fallback)"
+            except (OSError, RuntimeError, TypeError, ValueError) as fallback_exc:
+                warnings.append(
+                    f"PyMuPDF4LLM native text fallback failed: {fallback_exc}"
+                )
+                page_chunks = []
 
         if isinstance(page_chunks, str):
             page_texts = [page_chunks]
@@ -281,8 +343,15 @@ def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
         text = _clean_markdown_text(page_texts)
         try:
             tables = _camelot_tables(file_path)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except (
+            PDFTextExtractionNotAllowed,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             tables = []
+            warnings.append(f"Camelot table extraction skipped: {exc}")
         if tables:
             text += "\n\n## Extracted Tables\n\n" + "\n\n".join(
                 table["markdown"] for table in tables
@@ -295,7 +364,7 @@ def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
         "text": text,
         "tables": tables,
         "table_cnt": len(tables),
-        "reason": "PyMuPDF4LLM + native hybrid OCR" if force_ocr else "PyMuPDF4LLM",
+        "reason": extraction_reason,
         **metadata,
     }
     if warnings:

@@ -76,6 +76,18 @@ def test_camelot_tables_skips_empty_tables():
         assert _camelot_tables("report.pdf") == []
 
 
+def test_camelot_tables_skips_text_restricted_pdf():
+    from playa.exceptions import PDFTextExtractionNotAllowed
+
+    with patch(
+        "fin_pipeline.utils.pdf_parser.camelot.read_pdf",
+        side_effect=PDFTextExtractionNotAllowed(
+            "Text extraction is not allowed"
+        ),
+    ):
+        assert _camelot_tables("restricted.pdf") == []
+
+
 def test_pdf_properties_keep_higher_confidence_than_text_metadata():
     document = SimpleNamespace(metadata={"title": "Apple Inc.", "subject": "10-K"})
 
@@ -88,6 +100,39 @@ def test_pdf_properties_keep_higher_confidence_than_text_metadata():
 
     assert result["stockName"] == "Apple Inc."
     assert result["metadataSources"]["stockName"] == "pdf_properties"
+
+
+def test_generic_pdf_properties_do_not_override_text_metadata():
+    document = SimpleNamespace(
+        metadata={
+            "title": "Adobe InDesign - Untitled",
+            "subject": "Adobe InDesign",
+            "keywords": "Adobe InDesign, report",
+        }
+    )
+
+    result = __import__(
+        "fin_pipeline.utils.pdf_parser", fromlist=["extract_filing_metadata"]
+    ).extract_filing_metadata(
+        "Acme Holdings Annual Report 2024\nFor the year ended 31 December 2024",
+        document,
+    )
+
+    assert result["stockName"] == "Acme Holdings"
+    assert result["filingType"] == "Annual Report"
+    assert result["filingDate"] == "2024-12-31"
+    assert result["metadataSources"]["stockName"] == "pdf_text_regex"
+
+
+def test_pdf_property_keywords_only_provide_a_normalized_exchange():
+    document = SimpleNamespace(metadata={"keywords": "NYSE, annual report"})
+
+    result = __import__(
+        "fin_pipeline.utils.pdf_parser", fromlist=["extract_filing_metadata"]
+    ).extract_filing_metadata("Annual Report", document)
+
+    assert result["exchange"] == "NYSE"
+    assert result["metadataSources"]["exchange"] == "pdf_properties"
 
 
 def test_metadata_prefers_labeled_company_name_from_early_pages():
@@ -172,3 +217,31 @@ def test_pdf_parser_passes_force_ocr_and_native_callback():
     assert to_markdown.call_args.kwargs["force_ocr"] is True
     assert to_markdown.call_args.kwargs["ocr_function"]
     assert to_markdown.call_args.args[0] is document
+
+
+def test_pdf_parser_falls_back_to_native_text_when_ocr_fails():
+    document = SimpleNamespace(metadata={})
+    ocr_error = __import__("pymupdf").mupdf.FzErrorArgument(
+        "Invalid bandwriter header dimensions/setup"
+    )
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            side_effect=[
+                ocr_error,
+                [{"text": "Acme Holdings Annual Report 2024"}],
+            ],
+        ) as to_markdown,
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables", return_value=[]),
+    ):
+        open_pdf.return_value.__enter__.return_value = document
+        result = parse_pdf_layout("report.pdf")
+
+    assert result["text"] == "Acme Holdings Annual Report 2024"
+    assert result["reason"] == "PyMuPDF4LLM (OCR fallback)"
+    assert "OCR extraction failed" in result["warnings"][0]
+    assert to_markdown.call_count == 2
+    assert to_markdown.call_args_list[1].kwargs["use_ocr"] == __import__(
+        "fin_pipeline.utils.pdf_parser", fromlist=["OCRMode"]
+    ).OCRMode.NEVER

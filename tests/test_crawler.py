@@ -56,6 +56,49 @@ def test_scan_directory_retains_defaults_for_unstructured_filename(tmp_path):
     assert result["filingDate"] is None
 
 
+def test_scan_directory_parses_company_website_annual_report_filename(tmp_path):
+    report = tmp_path / "Magontec_Limited_Annual_Report_2021.pdf"
+    report.write_bytes(b"%PDF-1.4")
+
+    result = next(iter(scan_directory(str(tmp_path), recursive=False)))[1]
+
+    assert result["stockName"] == "Magontec Limited"
+    assert result["stockCode"] == "UNKNOWN"
+    assert result["filingType"] == "ANNUAL_REPORT"
+    assert result["filingDate"] == "2021-12-31"
+    assert result["metadataSources"]["stockName"] == "filename_company_name"
+    assert result["metadataSources"]["filingDate"] == "filename_year_inferred"
+
+
+@pytest.mark.parametrize(
+    ("filename", "filing_type"),
+    [
+        ("ACME_Integrated_Report_FY2023.pdf", "INTEGRATED_REPORT"),
+        ("ACME_Sustainability_Report_2022.pdf", "SUSTAINABILITY_REPORT"),
+        ("ACME_ESG_Report_2024.pdf", "ESG_REPORT"),
+    ],
+)
+def test_scan_directory_parses_non_sec_report_filename_types(
+    tmp_path, filename, filing_type
+):
+    (tmp_path / filename).write_bytes(b"%PDF-1.4")
+
+    result = next(iter(scan_directory(str(tmp_path), recursive=False)))[1]
+
+    assert result["filingType"] == filing_type
+    assert result["filingDate"].endswith("-12-31")
+
+
+def test_scan_directory_parses_code_prefix_in_website_filename(tmp_path):
+    report = tmp_path / "131662_Annual_Report_en_2018.pdf"
+    report.write_bytes(b"%PDF-1.4")
+
+    result = next(iter(scan_directory(str(tmp_path), recursive=False)))[1]
+
+    assert result["stockCode"] == "131662"
+    assert result["filingDate"] == "2018-12-31"
+
+
 def test_scan_directory_ignores_non_pdf_files(tmp_path):
     (tmp_path / "report.pdf").write_bytes(b"%PDF-1.4")
     (tmp_path / "notes.txt").write_text("not a filing")

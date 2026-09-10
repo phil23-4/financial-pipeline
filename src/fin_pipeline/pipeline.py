@@ -26,6 +26,21 @@ from fin_pipeline.utils.html_parser import (
 from fin_pipeline.utils.pdf_parser import parse_pdf_layout
 
 
+def _fallback_filing_id(file_path: str) -> str:
+    """Build a stable filing ID when callers omit one."""
+    try:
+        return f"local_{calculate_file_hash(file_path)[:32]}"
+    except OSError:
+        return f"local_{hashlib.sha256(os.path.abspath(file_path).encode()).hexdigest()[:32]}"
+
+
+def _resolve_filing_id(metadata_input: dict, file_path: str) -> str:
+    filing_id = metadata_input.get("filingId")
+    if isinstance(filing_id, str) and filing_id.strip():
+        return filing_id.strip()
+    return _fallback_filing_id(file_path)
+
+
 def detect_file_type(file_path: str) -> str:
     """Detect file type based on extension.
 
@@ -94,13 +109,17 @@ async def run_ingestion_pipeline(
     Returns:
         bool: True if processing completed successfully, False otherwise
     """
-    filing_id = metadata_input.get("filingId", "UNKNOWN_ID")
+    filing_id = _resolve_filing_id(metadata_input, file_path)
     start_time = time.time()
 
     log.info(
         f"🚀 Ingestion request initialized for filing ID: {filing_id} | Path: {file_path}"
     )
-    payload = {**metadata_input, "source": source.upper()}
+    payload = {
+        **metadata_input,
+        "filingId": filing_id,
+        "source": source.upper(),
+    }
 
     if not os.path.exists(file_path):
         log.error(f"❌ File missing on target file execution block path: {file_path}")
@@ -218,9 +237,18 @@ async def run_html_content_pipeline(
     metadata_input: dict, html_content: str, source: str = "SEC"
 ) -> bool:
     """Parse and ingest SEC HTML held in memory, without writing it to disk."""
-    filing_id = metadata_input.get("filingId", "UNKNOWN_ID")
+    supplied_filing_id = metadata_input.get("filingId")
+    filing_id = (
+        supplied_filing_id.strip()
+        if isinstance(supplied_filing_id, str) and supplied_filing_id.strip()
+        else f"html_{hashlib.sha256(html_content.encode('utf-8')).hexdigest()[:32]}"
+    )
     start_time = time.time()
-    payload = {**metadata_input, "source": source.upper()}
+    payload = {
+        **metadata_input,
+        "filingId": filing_id,
+        "source": source.upper(),
+    }
     try:
         parsed = parse_html_content(html_content)
         accession_number = str(filing_id).removeprefix("sec_")

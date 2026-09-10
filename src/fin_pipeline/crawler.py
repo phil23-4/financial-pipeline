@@ -16,7 +16,7 @@ from fin_pipeline.utils.crypto import calculate_file_hash
 
 
 def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
-    """Parse identity and report details from the supported local PDF layout."""
+    """Parse identity and report details from a local PDF path and filename."""
     metadata = {
         "stockName": None,
         "stockCode": DEFAULT_TICKER,
@@ -56,13 +56,64 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
         metadata["metadataConfidence"].update(
             {"stockCode": 0.9, "filingType": 0.9, "filingDate": 0.7}
         )
+    else:
+        normalized_name = re.sub(r"[_-]+", " ", base_name)
+        normalized_name = re.sub(r"\s+", " ", normalized_name).strip()
+        report_match = re.search(
+            r"(?i)(?P<report>"
+            r"annual\s+report|integrated\s+report|"
+            r"sustainability\s+report|esg\s+report|"
+            r"annualreport|integratedreport|sustainabilityreport|esgreport"
+            r")",
+            normalized_name,
+        )
+        year_match = re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized_name)
+
+        if report_match:
+            report_name = re.sub(r"\s+", " ", report_match.group("report")).lower()
+            report_type = {
+                "annualreport": "ANNUAL_REPORT",
+                "annual report": "ANNUAL_REPORT",
+                "integratedreport": "INTEGRATED_REPORT",
+                "integrated report": "INTEGRATED_REPORT",
+                "sustainabilityreport": "SUSTAINABILITY_REPORT",
+                "sustainability report": "SUSTAINABILITY_REPORT",
+                "esgreport": "ESG_REPORT",
+                "esg report": "ESG_REPORT",
+            }[report_name]
+            metadata["filingType"] = report_type
+            metadata["metadataSources"]["filingType"] = "filename_report_type"
+            metadata["metadataConfidence"]["filingType"] = 0.75
+
+            prefix = normalized_name[: report_match.start()].strip(" -:()")
+            prefix = re.sub(r"(?i)\b(?:fy|fiscal year)\s*$", "", prefix).strip()
+            code_match = re.fullmatch(
+                r"(?i)(?P<code>[a-z0-9][a-z0-9./]{1,20})", prefix
+            )
+            if code_match and not re.fullmatch(r"(?:19|20)\d{2}", prefix):
+                metadata["stockCode"] = code_match.group("code")
+                metadata["metadataSources"]["stockCode"] = "filename_code"
+                metadata["metadataConfidence"]["stockCode"] = 0.75
+            elif prefix:
+                metadata["filenameCompanyName"] = prefix
+
+        if year_match:
+            metadata["filingDate"] = f"{year_match.group(0)}-12-31"
+            metadata["metadataSources"]["filingDate"] = "filename_year_inferred"
+            metadata["metadataConfidence"]["filingDate"] = 0.55
 
     company_path = os.path.dirname(file_path)
     company_name = os.path.basename(company_path).replace("_", " ").strip()
-    if company_name:
+    if metadata.get("filenameCompanyName"):
+        metadata["stockName"] = metadata["filenameCompanyName"]
+        metadata["metadataSources"]["stockName"] = "filename_company_name"
+        metadata["metadataConfidence"]["stockName"] = 0.65
+    elif company_name and company_name != ".":
         metadata["stockName"] = company_name
         metadata["metadataSources"]["stockName"] = "parent_directory"
         metadata["metadataConfidence"]["stockName"] = 0.95
+
+    metadata.pop("filenameCompanyName", None)
 
     return metadata
 
