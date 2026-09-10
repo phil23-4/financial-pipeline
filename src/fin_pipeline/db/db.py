@@ -6,7 +6,7 @@ import base64
 import json
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime
 
 from loguru import logger
 
@@ -168,7 +168,7 @@ def upsert_batch_with_retry(
                 with open(LOG_DIR / "pipeline_failed.sql", "a", encoding="utf-8") as fh:
                     fh.write(
                         "-- FAILED @ "
-                        + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        + datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
                         + "\n"
                     )
                     fh.write("-- " + err_txt.replace("\n", " ")[:500] + "\n")
