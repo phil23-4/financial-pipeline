@@ -1,7 +1,7 @@
 """Constants for database tables, filing types, and other configuration values."""
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 
 # Database table names
 FILING_TABLE = "exchange_filing"
@@ -224,7 +224,7 @@ def parse_extracted_date_str(raw_date_str: str) -> str | None:
 
     for fmt in DATE_FORMATS:
         try:
-            return datetime.strptime(cleaned, fmt).strftime("%Y-%m-%d")
+            return datetime.replace(tz=UTC).strptime(cleaned, fmt).strftime("%Y-%m-%d")
         except ValueError:
             continue
 

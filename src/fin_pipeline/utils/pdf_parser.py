@@ -120,7 +120,10 @@ def _clean_markdown_text(page_texts: Iterable[str]) -> str:
     pages = [[line.strip() for line in text.splitlines()] for text in page_texts]
     line_counts: dict[str, int] = {}
     for lines in pages:
-        candidates = set(lines[:3] + lines[-3:])
+        non_empty = [line for line in lines if line]
+        if len(non_empty) < 4:
+            continue
+        candidates = set(non_empty[:2] + non_empty[-2:])
         for line in candidates:
             if line and len(line) < 160:
                 line_counts[line] = line_counts.get(line, 0) + 1
@@ -151,7 +154,13 @@ def _clean_markdown_text(page_texts: Iterable[str]) -> str:
 
 
 def _cell_text(value: Any) -> str:
-    text = "" if value is None else str(value)
+    if value is None:
+        return ""
+
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return ""
+
+    text = str(value)
     text = re.sub(r"\s+", " ", text).strip()
     return text.replace("|", "\\|")
 
@@ -159,12 +168,14 @@ def _cell_text(value: Any) -> str:
 def _camelot_tables(file_path: str) -> list[dict]:
     """Extract tables with Camelot, preferring ruled tables over text tables."""
 
-    try:
-        tables = camelot.read_pdf(file_path, pages="all", flavor="lattice")
-    except (OSError, RuntimeError, TypeError, ValueError):
-        tables = camelot.read_pdf(file_path, pages="all", flavor="stream")
-    if not tables:
-        tables = camelot.read_pdf(file_path, pages="all", flavor="stream")
+    tables: list[Any] = []
+    for flavor in ("lattice", "stream"):
+        try:
+            tables = camelot.read_pdf(file_path, pages="all", flavor=flavor)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            tables = []
+        if tables:
+            break
 
     extracted = []
     for index, table in enumerate(tables):
@@ -199,14 +210,19 @@ def _camelot_tables(file_path: str) -> list[dict]:
 
 def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
     """Extract Markdown, tables, and metadata using native PyMuPDF4LLM OCR."""
+    warnings: list[str] = []
     with pymupdf.open(file_path) as doc:
-        page_chunks = pymupdf4llm.to_markdown(
-            doc,
-            page_chunks=True,
-            use_ocr=OCRMode.SELECT_REMOVING_OLD,
-            force_ocr=force_ocr,
-            ocr_function=rapidtess_api.exec_ocr,
-        )
+        try:
+            page_chunks = pymupdf4llm.to_markdown(
+                doc,
+                page_chunks=True,
+                use_ocr=OCRMode.SELECT_REMOVING_OLD,
+                force_ocr=force_ocr,
+                ocr_function=rapidtess_api.exec_ocr,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            warnings.append(f"PyMuPDF4LLM text extraction failed: {exc}")
+            page_chunks = []
 
         if isinstance(page_chunks, str):
             page_texts = [page_chunks]
@@ -225,10 +241,13 @@ def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
             text, doc, company_text="\n".join(page_texts[:3])
         )
 
-    return {
+    result = {
         "text": text,
         "tables": tables,
         "table_cnt": len(tables),
         "reason": "PyMuPDF4LLM + native hybrid OCR" if force_ocr else "PyMuPDF4LLM",
         **metadata,
     }
+    if warnings:
+        result["warnings"] = warnings
+    return result

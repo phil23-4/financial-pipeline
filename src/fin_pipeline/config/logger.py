@@ -1,7 +1,7 @@
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 
 from loguru import logger
 
@@ -12,9 +12,7 @@ LOG_DIR = os.getenv("FIN_PIPELINE_LOG_DIR", "logs")
 def serialize_json_log(record):
     """Formats Python logs into unified JSON configurations for metric parsers."""
     timestamp = (
-        record.get("time")
-        or record.get("date")
-        or datetime.datetime.now(tz=datetime.timezone.utc)
+        record.get("time") or record.get("date") or datetime.datetime.now(tz=UTC)
     )
     if hasattr(timestamp, "strftime"):
         timestamp_value = timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
