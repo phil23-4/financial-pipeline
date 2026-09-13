@@ -20,6 +20,7 @@ def test_camelot_tables_uses_parsing_report_accuracy():
 
     assert result[0]["accuracy"] == 97.5
     assert result[0]["headers"] == ["Asset", "Value"]
+    assert result[0]["rows"] == [["Cash", "10"]]
     assert result[0]["rowCount"] == 1
 
     record = ExchangeFilingModel(
@@ -74,6 +75,51 @@ def test_camelot_tables_skips_empty_tables():
 
     with patch("fin_pipeline.utils.pdf_parser.camelot.read_pdf", return_value=[table]):
         assert _camelot_tables("report.pdf") == []
+
+
+def test_camelot_tables_preserves_data_when_no_header_is_detected():
+    table = SimpleNamespace(
+        df=SimpleNamespace(
+            values=SimpleNamespace(
+                tolist=lambda: [["2021", "100"], ["2022", "120"]]
+            )
+        ),
+        page="1",
+        parsing_report={},
+    )
+
+    with patch(
+        "fin_pipeline.utils.pdf_parser.camelot.read_pdf",
+        return_value=[table],
+    ):
+        result = _camelot_tables("report.pdf")
+
+    assert result[0]["headers"] == ["Column 1", "Column 2"]
+    assert result[0]["rowCount"] == 2
+    assert "| 2021 | 100 |" in result[0]["markdown"]
+    assert result[0]["rows"] == [["2021", "100"], ["2022", "120"]]
+
+
+def test_camelot_tables_skips_malformed_table_and_keeps_valid_tables():
+    malformed = SimpleNamespace(df=SimpleNamespace(values=None))
+    valid = SimpleNamespace(
+        df=SimpleNamespace(
+            values=SimpleNamespace(tolist=lambda: [["Asset", "Value"], ["Cash", "10"]])
+        ),
+        page="2",
+        parsing_report={},
+    )
+    warnings = []
+
+    with patch(
+        "fin_pipeline.utils.pdf_parser.camelot.read_pdf",
+        return_value=[malformed, valid],
+    ):
+        result = _camelot_tables("report.pdf", warnings)
+
+    assert len(result) == 1
+    assert result[0]["headers"] == ["Asset", "Value"]
+    assert "table 0 skipped" in warnings[0]
 
 
 def test_camelot_tables_skips_text_restricted_pdf():
@@ -194,6 +240,7 @@ def test_pdf_parser_returns_metadata_without_tables():
     assert result["tables"] == []
     assert result["table_cnt"] == 0
     assert result["filingType"] == "Annual Report"
+    assert result["warnings"] == []
     open_pdf.assert_called_once_with("report.pdf")
 
 
@@ -217,6 +264,24 @@ def test_pdf_parser_passes_force_ocr_and_native_callback():
     assert to_markdown.call_args.kwargs["force_ocr"] is True
     assert to_markdown.call_args.kwargs["ocr_function"]
     assert to_markdown.call_args.args[0] is document
+
+
+def test_pdf_parser_can_skip_expensive_table_extraction():
+    document = SimpleNamespace(metadata={})
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            return_value=[{"text": "Annual Report"}],
+        ),
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables") as camelot_tables,
+    ):
+        open_pdf.return_value.__enter__.return_value = document
+        result = parse_pdf_layout("report.pdf", extract_tables=False)
+
+    camelot_tables.assert_not_called()
+    assert result["tables"] == []
+    assert "Camelot table extraction disabled" in result["warnings"]
 
 
 def test_pdf_parser_falls_back_to_native_text_when_ocr_fails():
@@ -245,3 +310,24 @@ def test_pdf_parser_falls_back_to_native_text_when_ocr_fails():
     assert to_markdown.call_args_list[1].kwargs["use_ocr"] == __import__(
         "fin_pipeline.utils.pdf_parser", fromlist=["OCRMode"]
     ).OCRMode.NEVER
+
+
+def test_pdf_parser_marks_empty_native_fallback_as_partial():
+    document = SimpleNamespace(metadata={})
+    ocr_error = __import__("pymupdf").mupdf.FzErrorArgument(
+        "Invalid bandwriter header dimensions/setup"
+    )
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            side_effect=[ocr_error, []],
+        ),
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables", return_value=[]),
+    ):
+        open_pdf.return_value.__enter__.return_value = document
+        result = parse_pdf_layout("report.pdf")
+
+    assert result["text"] == ""
+    assert result["reason"] == "PyMuPDF4LLM (OCR fallback; no native text)"
+    assert any("No usable text" in warning for warning in result["warnings"])

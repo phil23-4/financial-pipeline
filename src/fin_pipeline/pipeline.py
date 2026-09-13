@@ -152,7 +152,12 @@ async def run_ingestion_pipeline(
                     "documentTables": parsed["tables"],
                     "documentTableCnt": parsed["table_cnt"],
                     "documentStatus": STATUS_PROCESSED,
-                    "documentStatusReason": parsed["reason"],
+                    "documentStatusReason": parsed["reason"]
+                    + (
+                        f"; {' | '.join(parsed['warnings'])}"
+                        if parsed.get("warnings")
+                        else ""
+                    ),
                     "documentType": detect_file_type(file_path).upper(),
                 }
             )

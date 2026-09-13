@@ -1,7 +1,7 @@
 import re
 from collections.abc import Iterable
 from math import isfinite
-from typing import Any
+from typing import Any, TypedDict
 
 import camelot
 import pymupdf
@@ -14,6 +14,35 @@ from fin_pipeline.utils.metadata import (
     extract_metadata_from_text,
     set_field_candidate,
 )
+
+
+class ExtractedTable(TypedDict):
+    tableIndex: int
+    pageNumber: int | None
+    headers: list[str]
+    rows: list[list[str]]
+    rowCount: int
+    accuracy: float | None
+    markdown: str
+
+
+class PdfParseResult(TypedDict, total=False):
+    text: str
+    tables: list[ExtractedTable]
+    table_cnt: int
+    reason: str
+    warnings: list[str]
+    stockName: str | None
+    filingDate: str | None
+    filingType: str | None
+    exchange: str | None
+    cik: str | None
+    lei: str | None
+    isin: str | None
+    cusip: str | None
+    sedol: str | None
+    metadataSources: dict[str, str]
+    metadataConfidence: dict[str, float]
 
 
 def _extract_pdf_metadata_from_properties(
@@ -40,6 +69,9 @@ def _extract_pdf_metadata_from_properties(
 
 _GENERIC_PDF_PROPERTY_PATTERNS = (
     r"^untitled(?: document)?$",
+    r"^(?:document|report|final|draft|copy)$",
+    r"^(?:annual|integrated|esg|sustainability)\s+report$",
+    r"^(?:company|corporate)\s+(?:report|document)$",
     r"^adobe indesign(?: -|:)?",
     r"^adobe acrobat(?: -|:)?",
     r"^microsoft (?:word|office)(?: -|:)?",
@@ -105,7 +137,7 @@ def extract_filing_metadata(
                         "stockName",
                         title,
                         "pdf_properties",
-                        0.88,
+                        0.84,
                     )
             elif not report_title_match or legal_title_match:
                 set_field_candidate(
@@ -113,7 +145,7 @@ def extract_filing_metadata(
                     "stockName",
                     title,
                     "pdf_properties",
-                    0.88 if legal_title_match else 0.68,
+                    0.84 if legal_title_match else 0.68,
                 )
             if title_metadata.get("filingType"):
                 set_field_candidate(
@@ -148,10 +180,7 @@ def extract_filing_metadata(
                     0.72,
                 )
 
-    text_metadata = extract_metadata_from_text(
-        text, "pdf_text_regex", company_text=company_text
-    )
-    for field in [
+    metadata_fields = [
         "stockName",
         "filingDate",
         "filingType",
@@ -161,15 +190,41 @@ def extract_filing_metadata(
         "isin",
         "cusip",
         "sedol",
-    ]:
-        if field in text_metadata and text_metadata[field] is not None:
+    ]
+
+    def add_text_candidates(
+        extracted: dict[str, Any], default_source: str, confidence_scale: float
+    ) -> None:
+        for field in metadata_fields:
+            if field not in extracted or extracted[field] is None:
+                continue
+            source = extracted.get("metadataSources", {}).get(field, default_source)
+            confidence = extracted.get("metadataConfidence", {}).get(field, 0.8)
             set_field_candidate(
                 candidate_map,
                 field,
-                text_metadata[field],
-                text_metadata.get("metadataSources", {}).get(field, "pdf_text_regex"),
-                text_metadata.get("metadataConfidence", {}).get(field, 0.8),
+                extracted[field],
+                source,
+                confidence * confidence_scale,
             )
+
+    priority_text = company_text.strip() if company_text else text[:8000]
+    if priority_text:
+        priority_source = "pdf_cover_text" if company_text else "pdf_text_regex"
+        add_text_candidates(
+            extract_metadata_from_text(
+                priority_text, priority_source, company_text=priority_text
+            ),
+            priority_source,
+            1.0,
+        )
+
+    if text and text != priority_text:
+        add_text_candidates(
+            extract_metadata_from_text(text, "pdf_text_regex"),
+            "pdf_text_regex",
+            0.75,
+        )
 
     result: dict[str, Any] = {
         k: None
@@ -250,56 +305,100 @@ def _cell_text(value: Any) -> str:
     return text.replace("|", "\\|")
 
 
-def _camelot_tables(file_path: str) -> list[dict]:
+def _camelot_tables(
+    file_path: str, warnings: list[str] | None = None
+) -> list[ExtractedTable]:
     """Extract tables with Camelot, preferring ruled tables over text tables."""
 
     tables: list[Any] = []
     for flavor in ("lattice", "stream"):
         try:
             tables = camelot.read_pdf(file_path, pages="all", flavor=flavor)
+        except PDFTextExtractionNotAllowed as exc:
+            if warnings is not None:
+                warnings.append(f"Camelot {flavor} extraction skipped: {exc}")
+            break
         except (
-            PDFTextExtractionNotAllowed,
             OSError,
             RuntimeError,
             TypeError,
             ValueError,
-        ):
+        ) as exc:
+            if warnings is not None:
+                warnings.append(f"Camelot {flavor} extraction failed: {exc}")
             tables = []
         if tables:
             break
 
-    extracted = []
+    extracted: list[ExtractedTable] = []
     for index, table in enumerate(tables):
-        rows = [[_cell_text(cell) for cell in row] for row in table.df.values.tolist()]
-        rows = [row for row in rows if any(row)]
-        if not rows:
-            continue
-        width = max(len(row) for row in rows)
-        rows = [row + [""] * (width - len(row)) for row in rows]
-        headers = rows[0]
-        if not any(headers):
-            headers = [f"Column {column + 1}" for column in range(width)]
-        body = rows[1:]
-        parsing_report = getattr(table, "parsing_report", {}) or {}
-        markdown_rows = [
-            "| " + " | ".join(headers) + " |",
-            "| " + " | ".join("---" for _ in headers) + " |",
-        ]
-        markdown_rows.extend("| " + " | ".join(row) + " |" for row in body)
-        extracted.append(
-            {
-                "tableIndex": index,
-                "pageNumber": int(table.page) if table.page else None,
-                "headers": [str(header) for header in headers],
-                "rowCount": len(body),
-                "accuracy": parsing_report.get("accuracy"),
-                "markdown": "\n".join(markdown_rows),
-            }
-        )
+        try:
+            rows = [
+                [_cell_text(cell) for cell in row]
+                for row in table.df.values.tolist()
+            ]
+            rows = [row for row in rows if any(row)]
+            if not rows:
+                continue
+            width = max(len(row) for row in rows)
+            rows = [row + [""] * (width - len(row)) for row in rows]
+            first_row, remaining_rows = rows[0], rows[1:]
+            has_header = _looks_like_table_header(first_row, remaining_rows)
+            if has_header:
+                headers = first_row
+                body = remaining_rows
+            else:
+                headers = [f"Column {column + 1}" for column in range(width)]
+                body = rows
+            parsing_report = getattr(table, "parsing_report", {}) or {}
+            markdown_rows = [
+                "| " + " | ".join(headers) + " |",
+                "| " + " | ".join("---" for _ in headers) + " |",
+            ]
+            markdown_rows.extend("| " + " | ".join(row) + " |" for row in body)
+            page = getattr(table, "page", None)
+            extracted.append(
+                {
+                    "tableIndex": index,
+                    "pageNumber": int(page) if page else None,
+                    "headers": [str(header) for header in headers],
+                    "rows": body,
+                    "rowCount": len(body),
+                    "accuracy": parsing_report.get("accuracy"),
+                    "markdown": "\n".join(markdown_rows),
+                }
+            )
+        except (AttributeError, IndexError, TypeError, ValueError) as exc:
+            if warnings is not None:
+                warnings.append(f"Camelot table {index} skipped: {exc}")
     return extracted
 
 
-def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
+def _looks_like_table_header(first_row: list[str], body: list[list[str]]) -> bool:
+    """Conservatively decide whether the first extracted row is a header."""
+    if not body or any(not cell for cell in first_row):
+        return True
+    header_terms = (
+        "asset",
+        "category",
+        "date",
+        "description",
+        "name",
+        "period",
+        "revenue",
+        "total",
+        "value",
+        "year",
+    )
+    normalized = [cell.casefold() for cell in first_row]
+    return any(
+        any(term in cell for term in header_terms) for cell in normalized
+    )
+
+
+def parse_pdf_layout(
+    file_path: str, force_ocr: bool = False, extract_tables: bool = True
+) -> PdfParseResult:
     """Extract Markdown, tables, and metadata using native PyMuPDF4LLM OCR."""
     warnings: list[str] = []
     extraction_reason = (
@@ -330,7 +429,13 @@ def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
                     force_ocr=False,
                 )
                 extraction_reason = "PyMuPDF4LLM (OCR fallback)"
-            except (OSError, RuntimeError, TypeError, ValueError) as fallback_exc:
+            except (
+                pymupdf.mupdf.FzErrorArgument,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ) as fallback_exc:
                 warnings.append(
                     f"PyMuPDF4LLM native text fallback failed: {fallback_exc}"
                 )
@@ -341,17 +446,9 @@ def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
         else:
             page_texts = [chunk.get("text", "") for chunk in page_chunks]
         text = _clean_markdown_text(page_texts)
-        try:
-            tables = _camelot_tables(file_path)
-        except (
-            PDFTextExtractionNotAllowed,
-            OSError,
-            RuntimeError,
-            TypeError,
-            ValueError,
-        ) as exc:
-            tables = []
-            warnings.append(f"Camelot table extraction skipped: {exc}")
+        tables = _camelot_tables(file_path, warnings) if extract_tables else []
+        if not extract_tables:
+            warnings.append("Camelot table extraction disabled")
         if tables:
             text += "\n\n## Extracted Tables\n\n" + "\n\n".join(
                 table["markdown"] for table in tables
@@ -360,13 +457,17 @@ def parse_pdf_layout(file_path: str, force_ocr: bool = False) -> dict:
             text, doc, company_text="\n".join(page_texts[:3])
         )
 
-    result = {
+    if not text:
+        warnings.append("No usable text was extracted from the PDF")
+        if extraction_reason == "PyMuPDF4LLM (OCR fallback)":
+            extraction_reason = "PyMuPDF4LLM (OCR fallback; no native text)"
+
+    result: PdfParseResult = {
         "text": text,
         "tables": tables,
         "table_cnt": len(tables),
         "reason": extraction_reason,
+        "warnings": warnings,
         **metadata,
     }
-    if warnings:
-        result["warnings"] = warnings
     return result

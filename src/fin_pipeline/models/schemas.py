@@ -8,6 +8,7 @@ class DocumentTableSchema(BaseModel):
     sheetName: str | None = None
     pageNumber: int | None = None
     headers: list[str] | None = None
+    rows: list[list[str]] | None = None
     rowCount: int | None = None
     accuracy: float | None = None
     markdown: str | None = None
