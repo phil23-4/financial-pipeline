@@ -91,7 +91,7 @@ def parse_document(file_path: str) -> dict:
 
 
 async def run_ingestion_pipeline(
-    metadata_input: dict, file_path: str, source: str
+    metadata_input: dict, file_path: str, source: str, dry_run: bool = False
 ) -> bool:
     """Execute complete document ingestion pipeline with extraction, validation, and database commit.
 
@@ -99,12 +99,13 @@ async def run_ingestion_pipeline(
     1. Document parsing (text and table extraction)
     2. Metadata enrichment with SEC Edgar data
     3. Pydantic schema validation
-    4. Database upsert and relationship establishment
+    4. Database upsert and relationship establishment, unless ``dry_run`` is true
 
     Args:
         metadata_input: Dictionary with filing metadata (filingId, companyTicker, etc.)
         file_path: Absolute path to document file to process
         source: Source identifier ('SEC', 'LOCAL', etc.)
+        dry_run: Parse and validate without writing to the database.
 
     Returns:
         bool: True if processing completed successfully, False otherwise
@@ -204,6 +205,12 @@ async def run_ingestion_pipeline(
         )
         return False
 
+    if dry_run:
+        log.info(
+            f"🧪 Dry run validated filing record {record_id}; no database changes made"
+        )
+        return True
+
     try:
         log.debug(
             f"💾 Opening connection channel block to SurrealDB for record update: {record_id}"
@@ -239,7 +246,7 @@ async def run_ingestion_pipeline(
 
 
 async def run_html_content_pipeline(
-    metadata_input: dict, html_content: str, source: str = "SEC"
+    metadata_input: dict, html_content: str, source: str = "SEC", dry_run: bool = False
 ) -> bool:
     """Parse and ingest SEC HTML held in memory, without writing it to disk."""
     supplied_filing_id = metadata_input.get("filingId")
@@ -325,9 +332,15 @@ async def run_html_content_pipeline(
         log.error(f"📡 Stream database commit failed for {filing_id}: {exc}")
         return False
 
+    if dry_run:
+        log.info(
+            f"🧪 Dry run validated streamed filing {record_id}; no database changes made"
+        )
+        return True
+
 
 async def process_entire_directory(
-    dir_path: str, source_type: str = "LOCAL", concurrency_limit: int = 3
+    dir_path: str, source_type: str = "LOCAL", concurrency_limit: int = 3, dry_run: bool = False
 ):
     """Recursively scan and ingest all documents from directory with concurrent processing.
 
@@ -350,7 +363,7 @@ async def process_entire_directory(
     async def worker(file_path: str, meta: dict):
         async with semaphore:
             try:
-                await run_ingestion_pipeline(meta, file_path, source=source_type)
+                await run_ingestion_pipeline(meta, file_path, source=source_type, dry_run=dry_run)
             except (OSError, RuntimeError, ValueError) as e:
                 error_msg = f"Worker execution failed for {file_path}: {e}"
                 log.error(f"❌ {error_msg}")
@@ -373,7 +386,7 @@ async def process_entire_directory(
 
 
 async def process_sec_edgar_html_directory(
-    dir_path: str, source_type: str = "SEC", concurrency_limit: int = 3
+    dir_path: str, source_type: str = "SEC", concurrency_limit: int = 3, dry_run: bool = False
 ):
     """Process SEC Edgar HTML filings sequentially from directory structure.
 
@@ -387,7 +400,7 @@ async def process_sec_edgar_html_directory(
             file_count += 1
             log.info(f"📄 Processing filing {file_count}: {file_path}")
             completed = await run_ingestion_pipeline(
-                generated_meta, file_path, source=source_type
+                generated_meta, file_path, source=source_type, dry_run=dry_run
             )
             if not completed:
                 log.error(
@@ -408,7 +421,7 @@ async def process_sec_edgar_html_directory(
     log.info(f"📋 Processed {file_count} SEC Edgar HTML filings sequentially.")
 
 
-async def process_sec_edgar_csv(csv_path: str, download_dir: str = "sec_downloads"):
+async def process_sec_edgar_csv(csv_path: str, download_dir: str = "sec_downloads", dry_run: bool = False):
     """Fetch and ingest SEC filings listed in a CSV, sequentially."""
     from fin_pipeline.sec_edgar import fetch_filings_from_csv
 
@@ -424,7 +437,7 @@ async def process_sec_edgar_csv(csv_path: str, download_dir: str = "sec_download
     for file_path, metadata in fetch_filings_from_csv(csv_path, download_dir):
         processed += 1
         log.info(f"📄 Processing downloaded SEC filing {processed}: {file_path}")
-        if not await run_ingestion_pipeline(metadata, str(file_path), source="SEC"):
+        if not await run_ingestion_pipeline(metadata, str(file_path), source="SEC", dry_run=dry_run):
             log.error("⏹️ Stopping CSV SEC batch because the current filing failed.")
             return False
 
@@ -436,6 +449,7 @@ async def process_sec_edgar_csv_stream(
     csv_path: str,
     year_range: tuple[int, int] | None = None,
     forms: list[str] | None = None,
+    dry_run: bool = False,
 ):
     """Fetch and ingest SEC filings from CSV without local files."""
     from fin_pipeline.sec_edgar import stream_filings_from_csv
@@ -445,7 +459,7 @@ async def process_sec_edgar_csv_stream(
         csv_path, year_range=year_range, forms=forms
     ):
         processed += 1
-        if not await run_html_content_pipeline(metadata, html_content):
+        if not await run_html_content_pipeline(metadata, html_content, dry_run=dry_run):
             log.error(
                 "⏹️ Stopping streamed SEC batch because the current filing failed."
             )

@@ -31,15 +31,16 @@ def main():
 @click.option(
     "--concurrency", "-c", default=3, type=int, help="Max simultaneous OCR processes"
 )
-def scan(dir_path: str, source: str, concurrency: int):
+@click.option("--dry-run", is_flag=True, help="Parse and validate without database writes.")
+def scan(dir_path: str, source: str, concurrency: int, dry_run: bool):
     """Recursively scan a local folder for PDFs and pipe them to SurrealDB."""
     click.echo(f"📂 Scanning target directory: {dir_path}")
     asyncio.run(
         process_entire_directory(
-            dir_path, source_type=source, concurrency_limit=concurrency
+            dir_path, source_type=source, concurrency_limit=concurrency, dry_run=dry_run
         )
     )
-    click.echo("✨ Directory processing task successfully closed out.")
+    click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Directory processing task successfully closed out.")
 
 
 @main.command()
@@ -53,7 +54,8 @@ def scan(dir_path: str, source: str, concurrency: int):
     type=int,
     help="Max simultaneous HTML processing tasks",
 )
-def sec_edgar_html(dir_path: str, concurrency: int):
+@click.option("--dry-run", is_flag=True, help="Parse and validate without database writes.")
+def sec_edgar_html(dir_path: str, concurrency: int, dry_run: bool):
     """Process SEC Edgar HTML filings from local directory structure.
 
     Expected structure: {dir_path}/sec-edgar-filings/{TICKER}/{FILING_TYPE}/{ACCESSION_NUMBER}/primary-document.html
@@ -63,10 +65,10 @@ def sec_edgar_html(dir_path: str, concurrency: int):
     click.echo(f"📂 Scanning SEC Edgar HTML directory: {dir_path}")
     asyncio.run(
         process_sec_edgar_html_directory(
-            dir_path, source_type="SEC", concurrency_limit=concurrency
+            dir_path, source_type="SEC", concurrency_limit=concurrency, dry_run=dry_run
         )
     )
-    click.echo("✨ SEC Edgar HTML processing task successfully closed out.")
+    click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ SEC Edgar HTML processing task successfully closed out.")
 
 
 @main.command()
@@ -77,18 +79,22 @@ def sec_edgar_html(dir_path: str, concurrency: int):
     show_default=True,
     help="Directory for downloaded primary HTML documents",
 )
-def sec_edgar_csv(csv_path: str, download_dir: str):
+@click.option("--dry-run", is_flag=True, help="Download, parse, and validate without database writes.")
+def sec_edgar_csv(csv_path: str, download_dir: str, dry_run: bool):
     """Fetch SEC filings for ticker/CIK rows in a CSV and ingest them."""
     click.echo(f"📄 Reading SEC company list: {csv_path}")
-    asyncio.run(process_sec_edgar_csv(csv_path, download_dir=download_dir))
-    click.echo("✨ SEC CSV processing task successfully closed out.")
+    completed = asyncio.run(process_sec_edgar_csv(csv_path, download_dir=download_dir, dry_run=dry_run))
+    if completed is False:
+        raise click.ClickException("SEC CSV processing failed.")
+    click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ SEC CSV processing task successfully closed out.")
 
 
 @main.command()
 @click.argument("csv_path", type=click.Path(exists=True, dir_okay=False))
 @click.option("--year-range", help="Inclusive filing year range, for example 2018-2025")
 @click.option("--forms", help="Comma-separated SEC forms, for example 10-K,10-Q")
-def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None):
+@click.option("--dry-run", is_flag=True, help="Fetch, parse, and validate without database writes.")
+def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None, dry_run: bool):
     """Fetch SEC filings from a CSV and ingest HTML directly from memory."""
     parsed_year_range = None
     if year_range:
@@ -112,8 +118,10 @@ def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None):
             "must contain at least one SEC form", param_hint="--forms"
         )
     click.echo(f"🌐 Streaming SEC company list: {csv_path}")
-    asyncio.run(process_sec_edgar_csv_stream(csv_path, parsed_year_range, parsed_forms))
-    click.echo("✨ SEC streaming task successfully closed out.")
+    completed = asyncio.run(process_sec_edgar_csv_stream(csv_path, parsed_year_range, parsed_forms, dry_run=dry_run))
+    if completed is False:
+        raise click.ClickException("SEC streaming processing failed.")
+    click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ SEC streaming task successfully closed out.")
 
 
 @main.command()
@@ -134,6 +142,11 @@ def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None):
     help="Filing format label (e.g., 10-K, 20-F)",
 )
 @click.option("--source", default="SEC", type=click.Choice(["SEC", "LOCAL"]))
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Parse and validate the file without writing to SurrealDB.",
+)
 def file(
     file_path: str,
     filing_id: str,
@@ -143,6 +156,7 @@ def file(
     exchange: str,
     filing_type: str,
     source: str,
+    dry_run: bool,
 ):
     """Ingest a single explicit file (PDF or HTML) with provided structured metadata."""
     metadata = {
@@ -154,8 +168,17 @@ def file(
         "filingType": filing_type,
     }
     click.echo(f"📥 Processing individual file: {os.path.basename(file_path)}")
-    asyncio.run(run_ingestion_pipeline(metadata, file_path, source=source))
-    click.echo("✨ Document registration sequence closed out.")
+    completed = asyncio.run(
+        run_ingestion_pipeline(
+            metadata, file_path, source=source, dry_run=dry_run
+        )
+    )
+    if not completed:
+        raise click.ClickException("Document processing failed.")
+    if dry_run:
+        click.echo("🧪 Dry run completed; no database changes were made.")
+    else:
+        click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Document registration sequence closed out.")
 
 
 if __name__ == "__main__":

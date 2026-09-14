@@ -71,6 +71,38 @@ async def test_successful_pipeline_ingestion(
 @patch("fin_pipeline.pipeline.parse_pdf_layout")
 @patch("fin_pipeline.pipeline.SurrealConnection")
 @patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
+async def test_dry_run_validates_without_database_writes(
+    mock_graph_rel, mock_surreal_conn, mock_pdf_parser, sample_pdf_path
+):
+    mock_pdf_parser.return_value = {
+        "text": "Sample financial document text layer",
+        "tables": [],
+        "table_cnt": 0,
+        "reason": "Digital Native",
+    }
+
+    completed = await run_ingestion_pipeline(
+        {
+            "filingId": "dry_run_filing",
+            "companyTicker": "XYZ",
+            "stockCode": "9999",
+            "exchange": "LSE",
+            "filingType": "10-K",
+        },
+        sample_pdf_path,
+        source="SEC",
+        dry_run=True,
+    )
+
+    assert completed is True
+    mock_surreal_conn.assert_not_called()
+    mock_graph_rel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("fin_pipeline.pipeline.parse_pdf_layout")
+@patch("fin_pipeline.pipeline.SurrealConnection")
+@patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
 async def test_file_pipeline_generates_filing_id_when_missing(
     mock_graph_rel, mock_surreal_conn, mock_pdf_parser, sample_pdf_path
 ):

@@ -50,3 +50,5 @@ DATA_MAPPING_RECOMMENDATION.md
 IMPLEMENTATION_SUMMARY.md
 README copy.md
 Modelfile
+data/analytics_data/LOCK
+data/analytics_data/manifest/00000000000000000000.manifest
