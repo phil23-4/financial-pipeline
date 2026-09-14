@@ -1,4 +1,5 @@
 import re
+import zlib
 from collections.abc import Iterable
 from math import isfinite
 from typing import Any, TypedDict
@@ -323,6 +324,7 @@ def _camelot_tables(
             RuntimeError,
             TypeError,
             ValueError,
+            zlib.error,
         ) as exc:
             if warnings is not None:
                 warnings.append(f"Camelot {flavor} extraction failed: {exc}")
@@ -396,6 +398,39 @@ def _looks_like_table_header(first_row: list[str], body: list[list[str]]) -> boo
     )
 
 
+def _extract_markdown_by_page(
+    doc: pymupdf.Document,
+    force_ocr: bool,
+    warnings: list[str],
+) -> tuple[list[Any], str]:
+    """Extract healthy pages individually when document-level parsing fails."""
+    chunks: list[Any] = []
+    for page_number in range(doc.page_count):
+        try:
+            page_chunks = pymupdf4llm.to_markdown(
+                doc,
+                pages=[page_number],
+                page_chunks=True,
+                use_ocr=OCRMode.SELECT_REMOVING_OLD,
+                force_ocr=force_ocr,
+                ocr_function=rapidtess_api.exec_ocr,
+            )
+            if isinstance(page_chunks, str):
+                chunks.append({"text": page_chunks})
+            else:
+                chunks.extend(page_chunks)
+        except (
+            pymupdf.mupdf.FzErrorBase,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            zlib.error,
+        ) as exc:
+            warnings.append(f"PDF page {page_number + 1} skipped: {exc}")
+    return chunks, "PyMuPDF4LLM (page-isolated fallback)"
+
+
 def parse_pdf_layout(
     file_path: str, force_ocr: bool = False, extract_tables: bool = True
 ) -> PdfParseResult:
@@ -414,11 +449,12 @@ def parse_pdf_layout(
                 ocr_function=rapidtess_api.exec_ocr,
             )
         except (
-            pymupdf.mupdf.FzErrorArgument,
+            pymupdf.mupdf.FzErrorBase,
             OSError,
             RuntimeError,
             TypeError,
             ValueError,
+            zlib.error,
         ) as exc:
             warnings.append(f"PyMuPDF4LLM OCR extraction failed: {exc}")
             try:
@@ -430,16 +466,19 @@ def parse_pdf_layout(
                 )
                 extraction_reason = "PyMuPDF4LLM (OCR fallback)"
             except (
-                pymupdf.mupdf.FzErrorArgument,
+                pymupdf.mupdf.FzErrorBase,
                 OSError,
                 RuntimeError,
                 TypeError,
                 ValueError,
+                zlib.error,
             ) as fallback_exc:
                 warnings.append(
                     f"PyMuPDF4LLM native text fallback failed: {fallback_exc}"
                 )
-                page_chunks = []
+                page_chunks, extraction_reason = _extract_markdown_by_page(
+                    doc, force_ocr=False, warnings=warnings
+                )
 
         if isinstance(page_chunks, str):
             page_texts = [page_chunks]

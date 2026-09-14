@@ -331,3 +331,30 @@ def test_pdf_parser_marks_empty_native_fallback_as_partial():
     assert result["text"] == ""
     assert result["reason"] == "PyMuPDF4LLM (OCR fallback; no native text)"
     assert any("No usable text" in warning for warning in result["warnings"])
+
+
+def test_pdf_parser_extracts_healthy_pages_when_document_parse_fails():
+    document = SimpleNamespace(metadata={}, page_count=2)
+    parse_error = __import__("pymupdf").mupdf.FzErrorArgument(
+        "incomplete or truncated stream"
+    )
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            side_effect=[
+                parse_error,
+                parse_error,
+                parse_error,
+                [{"text": "Healthy page"}],
+            ],
+        ) as to_markdown,
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables", return_value=[]),
+    ):
+        open_pdf.return_value.__enter__.return_value = document
+        result = parse_pdf_layout("report.pdf")
+
+    assert result["text"] == "Healthy page"
+    assert result["reason"] == "PyMuPDF4LLM (page-isolated fallback)"
+    assert any("PDF page 1 skipped" in warning for warning in result["warnings"])
+    assert to_markdown.call_count == 4
