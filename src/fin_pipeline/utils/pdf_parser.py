@@ -1,4 +1,6 @@
+import os
 import re
+import tempfile
 import zlib
 from collections.abc import Iterable
 from math import isfinite
@@ -398,6 +400,39 @@ def _looks_like_table_header(first_row: list[str], body: list[list[str]]) -> boo
     )
 
 
+def _exec_ocr_without_tiny_image_noise(*args: Any, **kwargs: Any) -> Any:
+    """Run OCR while filtering native diagnostics for unusably narrow regions."""
+    stderr_fd = os.dup(2)
+    with tempfile.TemporaryFile() as captured_stderr:
+        os.dup2(captured_stderr.fileno(), 2)
+        try:
+            result = rapidtess_api.exec_ocr(*args, **kwargs)
+        finally:
+            os.dup2(stderr_fd, 2)
+            os.close(stderr_fd)
+            captured_stderr.seek(0)
+            diagnostics = captured_stderr.read().decode("utf-8", errors="replace")
+
+    unexpected = [
+        line.strip()
+        for line in diagnostics.splitlines()
+        if line.strip()
+        and not re.search(
+            r"(?:Image too small to scale|Line cannot be recognized)",
+            line,
+            re.IGNORECASE,
+        )
+    ]
+    if unexpected:
+        # Preserve unexpected OCR diagnostics without printing noisy native output.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "OCR diagnostics: %s", " | ".join(unexpected)
+        )
+    return result
+
+
 def _extract_markdown_by_page(
     doc: pymupdf.Document,
     force_ocr: bool,
@@ -413,7 +448,7 @@ def _extract_markdown_by_page(
                 page_chunks=True,
                 use_ocr=OCRMode.SELECT_REMOVING_OLD,
                 force_ocr=force_ocr,
-                ocr_function=rapidtess_api.exec_ocr,
+                ocr_function=_exec_ocr_without_tiny_image_noise,
             )
             if isinstance(page_chunks, str):
                 chunks.append({"text": page_chunks})
@@ -446,7 +481,7 @@ def parse_pdf_layout(
                 page_chunks=True,
                 use_ocr=OCRMode.SELECT_REMOVING_OLD,
                 force_ocr=force_ocr,
-                ocr_function=rapidtess_api.exec_ocr,
+                ocr_function=_exec_ocr_without_tiny_image_noise,
             )
         except (
             pymupdf.mupdf.FzErrorBase,
