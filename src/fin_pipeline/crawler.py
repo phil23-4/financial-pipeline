@@ -20,11 +20,62 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
     metadata = {
         "stockName": None,
         "stockCode": DEFAULT_TICKER,
+        "companyTicker": DEFAULT_TICKER,
         "filingType": DEFAULT_FILING_TYPE,
         "filingDate": None,
         "metadataSources": {},
         "metadataConfidence": {},
     }
+
+    structured_name_match = re.fullmatch(
+        r"(?P<company_name>.+)_(?P<year>\d{4})_"
+        r"(?:(?P<stock_code>[^_]+)_)?"
+        r"(?P<report_code>ar|annual[_-]?report|sustainability[_-]?report|"
+        r"integrated[_-]?report|esg[_-]?report)"
+        r"(?:_(?P<language>[a-z]{2}))?_(?P<page>\d+)",
+        base_name,
+        re.IGNORECASE,
+    )
+    if structured_name_match:
+        values = structured_name_match.groupdict()
+        company_name = re.sub(r"[_-]+", " ", values["company_name"]).strip()
+        parent_directory = os.path.basename(os.path.dirname(file_path))
+        report_name = re.sub(r"[_-]+", " ", values["report_code"]).lower()
+        report_type = {
+            "annual report": "ANNUAL_REPORT",
+            "ar": "ANNUAL_REPORT",
+            "sustainability report": "SUSTAINABILITY_REPORT",
+            "integrated report": "INTEGRATED_REPORT",
+            "esg report": "ESG_REPORT",
+        }[report_name]
+        metadata.update(
+            {
+                "stockName": company_name,
+                "stockCode": values["stock_code"] or DEFAULT_TICKER,
+                "companyTicker": parent_directory.upper(),
+                "filingType": report_type,
+                "filingDate": f"{values['year']}-12-31",
+            }
+        )
+        metadata["metadataSources"].update(
+            {
+                "stockName": "filename_company_name",
+                "companyTicker": "parent_directory",
+                "stockCode": "filename" if values["stock_code"] else "directory_scan_default",
+                "filingType": "filename",
+                "filingDate": "filename_year_inferred",
+            }
+        )
+        metadata["metadataConfidence"].update(
+            {
+                "stockName": 0.9,
+                "companyTicker": 0.95,
+                "stockCode": 0.9 if values["stock_code"] else 0.0,
+                "filingType": 0.9,
+                "filingDate": 0.7,
+            }
+        )
+        return metadata
 
     file_name_match = re.fullmatch(
         r"(?P<stock_code>[^.]+)\.(?P<report_code>ar|annual[_-]?report)\."
@@ -146,7 +197,7 @@ def scan_directory(
         local_metadata = _parse_local_pdf_metadata(file_path, base_name)
         metadata = {
             "filingId": f"local_{base_name}_{short_hash}",
-            "companyTicker": DEFAULT_TICKER,
+            "companyTicker": local_metadata["companyTicker"],
             "stockCode": local_metadata["stockCode"],
             "exchange": LOCAL_EXCHANGE,
             "filingType": local_metadata["filingType"],

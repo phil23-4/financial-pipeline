@@ -30,6 +30,38 @@ def test_scan_directory_parses_local_filing_path_and_filename(tmp_path):
     assert result["metadataSources"]["stockName"] == "parent_directory"
 
 
+def test_scan_directory_parses_nested_ticker_and_structured_filename(tmp_path):
+    report_dir = tmp_path / "romania" / "TLV"
+    report_dir.mkdir(parents=True)
+    report = report_dir / "banca_transilvania_2020_131662_ar_en_5.pdf"
+    report.write_bytes(b"%PDF-1.4 data payload block")
+
+    result = next(iter(scan_directory(str(tmp_path))))[1]
+
+    assert result["companyTicker"] == "TLV"
+    assert result["stockName"] == "banca transilvania"
+    assert result["stockCode"] == "131662"
+    assert result["filingType"] == "ANNUAL_REPORT"
+    assert result["filingDate"] == "2020-12-31"
+    assert result["metadataSources"]["companyTicker"] == "parent_directory"
+    assert result["metadataSources"]["stockName"] == "filename_company_name"
+
+
+def test_scan_directory_parses_structured_sustainability_filename(tmp_path):
+    report_dir = tmp_path / "romania" / "TLV"
+    report_dir.mkdir(parents=True)
+    report = report_dir / "banca_transilvania_2022_sustainability_report_13.pdf"
+    report.write_bytes(b"%PDF-1.4 data payload block")
+
+    result = next(iter(scan_directory(str(tmp_path))))[1]
+
+    assert result["companyTicker"] == "TLV"
+    assert result["stockName"] == "banca transilvania"
+    assert result["stockCode"] == "UNKNOWN"
+    assert result["filingType"] == "SUSTAINABILITY_REPORT"
+    assert result["filingDate"] == "2022-12-31"
+
+
 @pytest.mark.parametrize("report_code", ["annual_report", "annual-report"])
 def test_scan_directory_accepts_annual_report_filename_variants(tmp_path, report_code):
     report_dir = tmp_path / "romania" / "Banca Transilvania"

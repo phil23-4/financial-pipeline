@@ -8,6 +8,7 @@ from fin_pipeline.config.logger import serialize_json_log
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.pipeline import run_html_content_pipeline, run_ingestion_pipeline
 from fin_pipeline.utils.html_parser import extract_filing_metadata
+from fin_pipeline.db import relations
 
 
 @pytest.mark.asyncio
@@ -176,6 +177,15 @@ def test_serialize_json_log_uses_loguru_time_field():
     assert payload["timestamp"] == "2026-09-01T15:16:50Z"
     assert payload["level"] == "INFO"
     assert payload["message"] == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_company_graph_relations_skip_when_company_table_is_unset(monkeypatch):
+    monkeypatch.setattr(relations, "COMPANY_TABLE", "")
+
+    assert await relations.ensure_company_exists(
+        AsyncMock(), "TLV", "Banca Transilvania", "LOCAL_FS"
+    ) is None
 
 
 def test_extract_filing_metadata_from_inline_xbrl():

@@ -10,9 +10,16 @@ from fin_pipeline.utils.db_utils import quote_record_id
 
 
 async def ensure_company_exists(
-    db: Surreal, ticker: str, company_name: str = None, exchange: str = None
+    db: Surreal,
+    ticker: str,
+    company_name: str | None = None,
+    exchange: str | None = None,
 ):
     """Auto-create a company record if it doesn't exist."""
+    if not COMPANY_TABLE:
+        log.debug("Skipping company graph relation because COMPANY_TABLE is unset")
+        return None
+
     # Check if company exists
     check_res = await db.query(
         f"SELECT id FROM {COMPANY_TABLE} WHERE ticker = $ticker LIMIT 1;",
@@ -56,9 +63,9 @@ async def establish_graph_relations(
     db: Surreal,
     filing_id: str,
     owning_ticker: str,
-    owning_company_name: str = None,
-    owning_exchange: str = None,
-    referenced_tickers: list = None,
+    owning_company_name: str | None = None,
+    owning_exchange: str | None = None,
+    referenced_tickers: list[str] | None = None,
 ):
     """Safely runs SurrealQL RELATE transactions, adhering to type safety rules.
 

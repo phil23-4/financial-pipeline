@@ -177,6 +177,17 @@ The supported filename pattern is:
 
 Ticker and exchange cannot be inferred reliably from this layout, so they remain `UNKNOWN` and `LOCAL_FS` respectively unless supplied through another metadata source. Files that do not match the pattern retain the scanner defaults.
 
+The scanner also supports country/ticker directories with structured filenames:
+
+```text
+Filings Data/
+└── romania/
+   └── TLV/
+      └── banca_transilvania_2020_131662_ar_en_5.pdf
+```
+
+For this layout, the ticker is read from the immediate parent directory (`TLV`), while the company name, year, stock code, and annual-report type are read from the filename.
+
 ## Requirements
 
 ### System dependencies
