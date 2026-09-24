@@ -219,6 +219,57 @@ def scan_directory(
         yield file_path, metadata
 
 
+def scan_documents(
+    dir_path: str, recursive: bool = True
+) -> Generator[tuple[str, dict[str, Any]], None, None]:
+    """Scan local directories for PDF and HTML assets."""
+    if not os.path.isdir(dir_path):
+        raise NotADirectoryError(f"Target path is not a valid directory: {dir_path}")
+
+    search_pattern = (
+        os.path.join(dir_path, "**", "*") if recursive else os.path.join(dir_path, "*")
+    )
+    for file_path in glob.glob(search_pattern, recursive=recursive):
+        if not os.path.isfile(file_path) or os.path.splitext(file_path)[1].lower() not in {
+            ".pdf",
+            ".html",
+        }:
+            continue
+
+        filename = os.path.basename(file_path)
+        base_name, _ = os.path.splitext(filename)
+        try:
+            file_hash = calculate_file_hash(file_path)
+            short_hash = file_hash[:8]
+        except OSError as e:
+            log.debug(f"Hash calculation failed for {file_path}: {e}")
+            short_hash = str(os.path.getsize(file_path))
+
+        local_metadata = _parse_local_pdf_metadata(file_path, base_name)
+        metadata = {
+            "filingId": f"local_{base_name}_{short_hash}",
+            "companyTicker": local_metadata["companyTicker"],
+            "stockCode": local_metadata["stockCode"],
+            "exchange": LOCAL_EXCHANGE,
+            "filingType": local_metadata["filingType"],
+            "stockName": local_metadata["stockName"],
+            "title": base_name.replace("_", " ").replace("-", " ").title(),
+            "filingDate": local_metadata["filingDate"],
+            "referencedTickers": [],
+            "metadataSources": {
+                "companyTicker": "directory_scan_default",
+                "exchange": "directory_scan_default",
+                **local_metadata["metadataSources"],
+            },
+            "metadataConfidence": {
+                "companyTicker": 0.0,
+                "exchange": 0.0,
+                **local_metadata["metadataConfidence"],
+            },
+        }
+        yield file_path, metadata
+
+
 def scan_sec_edgar_html_directory(
     base_path: str,
 ) -> Generator[tuple[str, dict[str, Any]], None, None]:

@@ -1,6 +1,10 @@
 import pytest
 
-from fin_pipeline.crawler import scan_directory, scan_sec_edgar_html_directory
+from fin_pipeline.crawler import (
+    scan_directory,
+    scan_documents,
+    scan_sec_edgar_html_directory,
+)
 
 
 def test_scan_directory_missing():
@@ -13,6 +17,16 @@ def test_scan_directory_with_mock_files(tmp_path):
     results = list(scan_directory(str(tmp_path), recursive=False))
     assert len(results) == 1
     assert results[0][1]["exchange"] == "LOCAL_FS"
+
+
+def test_scan_documents_includes_pdf_and_html_files(tmp_path):
+    (tmp_path / "report.pdf").write_bytes(b"%PDF-1.4 data payload block")
+    (tmp_path / "report.html").write_text("<html>report</html>")
+    (tmp_path / "notes.txt").write_text("ignored")
+
+    results = list(scan_documents(str(tmp_path)))
+
+    assert {path.rsplit(".", 1)[-1] for path, _ in results} == {"pdf", "html"}
 
 
 def test_scan_directory_parses_local_filing_path_and_filename(tmp_path):

@@ -102,6 +102,17 @@ The processing pipeline is organized as follows:
 6. Clean stale or partial data
    - avoids leaving incomplete prior versions behind
 
+To process a local folder containing a mixture of PDF and HTML documents, use:
+
+```bash
+fin-pipeline scan-mixed /path/to/documents --source LOCAL
+```
+
+The command recursively discovers both `.pdf` and `.html` files, routes each
+file to its matching parser, and supports `--concurrency` and `--dry-run` like
+the existing directory commands. The `scan` command remains PDF-only, while
+`sec-edgar-html` remains specialized for SEC Edgar directory layouts.
+
 ## Metadata extraction behavior
 
 The pipeline currently tries to extract metadata from both HTML and PDF input in a consistent way.

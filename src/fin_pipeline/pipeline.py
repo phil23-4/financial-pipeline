@@ -13,7 +13,7 @@ from fin_pipeline.config.constants import (
     STATUS_PROCESSED,
 )
 from fin_pipeline.config.logger import pipeline_logger as log
-from fin_pipeline.crawler import scan_directory
+from fin_pipeline.crawler import scan_directory, scan_documents
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.db.relations import establish_graph_relations
 from fin_pipeline.models.schemas import ExchangeFilingModel
@@ -379,6 +379,50 @@ async def process_entire_directory(
 
     await asyncio.gather(*tasks, return_exceptions=True)
 
+    if errors:
+        log.warning(f"⚠️ Completed with {len(errors)} errors during batch processing")
+        for error in errors:
+            log.debug(f"  - {error}")
+
+
+async def process_mixed_directory(
+    dir_path: str,
+    source_type: str = "LOCAL",
+    concurrency_limit: int = 3,
+    dry_run: bool = False,
+):
+    """Recursively ingest both PDF and HTML files from a local directory."""
+    if not os.path.isdir(dir_path):
+        log.error(
+            f"❌ Directory validation failed: {dir_path} is not a valid directory"
+        )
+        return
+
+    semaphore = asyncio.Semaphore(concurrency_limit)
+    errors = []
+
+    async def worker(file_path: str, meta: dict):
+        async with semaphore:
+            try:
+                completed = await run_ingestion_pipeline(
+                    meta, file_path, source=source_type, dry_run=dry_run
+                )
+                if not completed:
+                    errors.append(f"Document processing failed for {file_path}")
+            except (OSError, RuntimeError, ValueError) as e:
+                error_msg = f"Worker execution failed for {file_path}: {e}"
+                log.error(f"❌ {error_msg}")
+                errors.append(error_msg)
+
+    tasks = [
+        worker(file_path, generated_meta)
+        for file_path, generated_meta in scan_documents(dir_path, recursive=True)
+    ]
+    if not tasks:
+        log.warning("🔍 No PDF or HTML assets detected inside target folder path.")
+        return
+
+    await asyncio.gather(*tasks, return_exceptions=True)
     if errors:
         log.warning(f"⚠️ Completed with {len(errors)} errors during batch processing")
         for error in errors:

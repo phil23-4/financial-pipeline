@@ -5,6 +5,7 @@ import click
 
 from fin_pipeline.pipeline import (
     process_entire_directory,
+    process_mixed_directory,
     process_sec_edgar_csv,
     process_sec_edgar_csv_stream,
     process_sec_edgar_html_directory,
@@ -41,6 +42,32 @@ def scan(dir_path: str, source: str, concurrency: int, dry_run: bool):
         )
     )
     click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Directory processing task successfully closed out.")
+
+
+@main.command("scan-mixed")
+@click.argument(
+    "dir_path", type=click.Path(exists=True, file_okay=False, dir_okay=True)
+)
+@click.option(
+    "--source",
+    "-s",
+    default="LOCAL",
+    type=click.Choice(["LOCAL", "SEC"]),
+    help="Source metadata label",
+)
+@click.option(
+    "--concurrency", "-c", default=3, type=int, help="Max simultaneous parsing processes"
+)
+@click.option("--dry-run", is_flag=True, help="Parse and validate without database writes.")
+def scan_mixed(dir_path: str, source: str, concurrency: int, dry_run: bool):
+    """Recursively scan a local folder for both PDFs and HTML files."""
+    click.echo(f"📂 Scanning mixed document directory: {dir_path}")
+    asyncio.run(
+        process_mixed_directory(
+            dir_path, source_type=source, concurrency_limit=concurrency, dry_run=dry_run
+        )
+    )
+    click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Mixed directory processing task successfully closed out.")
 
 
 @main.command()

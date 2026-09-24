@@ -118,6 +118,15 @@ def test_scan_command_passes_dry_run(tmp_path):
     assert "Dry run completed" in result.output
 
 
+def test_scan_mixed_command_passes_dry_run(tmp_path):
+    with patch("fin_pipeline.cli.process_mixed_directory") as process:
+        result = CliRunner().invoke(main, ["scan-mixed", str(tmp_path), "--dry-run"])
+
+    assert result.exit_code == 0
+    assert process.call_args.kwargs["dry_run"] is True
+    assert "Dry run completed" in result.output
+
+
 def test_sec_html_command_passes_dry_run(tmp_path):
     with patch("fin_pipeline.cli.process_sec_edgar_html_directory") as process:
         result = CliRunner().invoke(
