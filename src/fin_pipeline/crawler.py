@@ -61,7 +61,9 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
             {
                 "stockName": "filename_company_name",
                 "companyTicker": "parent_directory",
-                "stockCode": "filename" if values["stock_code"] else "directory_scan_default",
+                "stockCode": "filename"
+                if values["stock_code"]
+                else "directory_scan_default",
                 "filingType": "filename",
                 "filingDate": "filename_year_inferred",
             }
@@ -138,9 +140,7 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
 
             prefix = normalized_name[: report_match.start()].strip(" -:()")
             prefix = re.sub(r"(?i)\b(?:fy|fiscal year)\s*$", "", prefix).strip()
-            code_match = re.fullmatch(
-                r"(?i)(?P<code>[a-z0-9][a-z0-9./]{1,20})", prefix
-            )
+            code_match = re.fullmatch(r"(?i)(?P<code>[a-z0-9][a-z0-9./]{1,20})", prefix)
             if code_match and not re.fullmatch(r"(?:19|20)\d{2}", prefix):
                 metadata["stockCode"] = code_match.group("code")
                 metadata["metadataSources"]["stockCode"] = "filename_code"
@@ -230,8 +230,11 @@ def scan_documents(
         os.path.join(dir_path, "**", "*") if recursive else os.path.join(dir_path, "*")
     )
     for file_path in glob.glob(search_pattern, recursive=recursive):
-        if not os.path.isfile(file_path) or os.path.splitext(file_path)[1].lower() not in {
+        if not os.path.isfile(file_path) or os.path.splitext(file_path)[
+            1
+        ].lower() not in {
             ".pdf",
+            ".htm",
             ".html",
         }:
             continue

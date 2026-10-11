@@ -48,12 +48,12 @@ def detect_file_type(file_path: str) -> str:
         file_path: Path to file
 
     Returns:
-        File type: 'pdf', 'html', or 'unknown'
+        File type: 'pdf', 'html', 'htm', or 'unknown'
     """
     _, ext = os.path.splitext(file_path.lower())
     if ext == ".pdf":
         return FILE_TYPE_PDF
-    elif ext == ".html":
+    elif ext in (".htm", ".html"):
         return FILE_TYPE_HTML
     else:
         return FILE_TYPE_UNKNOWN
@@ -340,7 +340,10 @@ async def run_html_content_pipeline(
 
 
 async def process_entire_directory(
-    dir_path: str, source_type: str = "LOCAL", concurrency_limit: int = 3, dry_run: bool = False
+    dir_path: str,
+    source_type: str = "LOCAL",
+    concurrency_limit: int = 3,
+    dry_run: bool = False,
 ):
     """Recursively scan and ingest all documents from directory with concurrent processing.
 
@@ -363,7 +366,9 @@ async def process_entire_directory(
     async def worker(file_path: str, meta: dict):
         async with semaphore:
             try:
-                await run_ingestion_pipeline(meta, file_path, source=source_type, dry_run=dry_run)
+                await run_ingestion_pipeline(
+                    meta, file_path, source=source_type, dry_run=dry_run
+                )
             except (OSError, RuntimeError, ValueError) as e:
                 error_msg = f"Worker execution failed for {file_path}: {e}"
                 log.error(f"❌ {error_msg}")
@@ -430,7 +435,10 @@ async def process_mixed_directory(
 
 
 async def process_sec_edgar_html_directory(
-    dir_path: str, source_type: str = "SEC", concurrency_limit: int = 3, dry_run: bool = False
+    dir_path: str,
+    source_type: str = "SEC",
+    concurrency_limit: int = 3,
+    dry_run: bool = False,
 ):
     """Process SEC Edgar HTML filings sequentially from directory structure.
 
@@ -465,7 +473,9 @@ async def process_sec_edgar_html_directory(
     log.info(f"📋 Processed {file_count} SEC Edgar HTML filings sequentially.")
 
 
-async def process_sec_edgar_csv(csv_path: str, download_dir: str = "sec_downloads", dry_run: bool = False):
+async def process_sec_edgar_csv(
+    csv_path: str, download_dir: str = "sec_downloads", dry_run: bool = False
+):
     """Fetch and ingest SEC filings listed in a CSV, sequentially."""
     from fin_pipeline.sec_edgar import fetch_filings_from_csv
 
@@ -481,7 +491,9 @@ async def process_sec_edgar_csv(csv_path: str, download_dir: str = "sec_download
     for file_path, metadata in fetch_filings_from_csv(csv_path, download_dir):
         processed += 1
         log.info(f"📄 Processing downloaded SEC filing {processed}: {file_path}")
-        if not await run_ingestion_pipeline(metadata, str(file_path), source="SEC", dry_run=dry_run):
+        if not await run_ingestion_pipeline(
+            metadata, str(file_path), source="SEC", dry_run=dry_run
+        ):
             log.error("⏹️ Stopping CSV SEC batch because the current filing failed.")
             return False
 
