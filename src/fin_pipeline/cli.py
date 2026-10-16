@@ -3,6 +3,7 @@ import os
 
 import click
 
+from fin_pipeline.export import export_filings_to_parquet
 from fin_pipeline.pipeline import (
     process_entire_directory,
     process_mixed_directory,
@@ -206,6 +207,50 @@ def file(
         click.echo("🧪 Dry run completed; no database changes were made.")
     else:
         click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Document registration sequence closed out.")
+
+
+@main.command()
+@click.option(
+    "--output-dir",
+    required=True,
+    type=click.Path(file_okay=False, dir_okay=True),
+    help="Directory for filings.parquet and chunks.parquet",
+)
+@click.option(
+    "--source-type",
+    type=click.Choice(
+        ["structured_filing", "glossy_report", "unknown"], case_sensitive=False
+    ),
+    help="Filter by source classification",
+)
+@click.option("--company-ticker", help="Filter by exact company ticker")
+@click.option("--filing-date-from", help="Inclusive filing date start (YYYY-MM-DD)")
+@click.option("--filing-date-to", help="Inclusive filing date end (YYYY-MM-DD)")
+def export(
+    output_dir: str,
+    source_type: str | None,
+    company_ticker: str | None,
+    filing_date_from: str | None,
+    filing_date_to: str | None,
+):
+    """Export filing records and document chunks to Parquet."""
+    filters = {}
+    if source_type:
+        filters["sourceType"] = source_type
+    if company_ticker:
+        filters["companyTicker"] = company_ticker
+    if filing_date_from or filing_date_to:
+        filters["filingDate"] = {
+            "start": filing_date_from,
+            "end": filing_date_to,
+        }
+    try:
+        filings_path = export_filings_to_parquet(output_dir, filters or None)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Exported filing and chunk Parquet files to {os.path.dirname(filings_path)}"
+    )
 
 
 if __name__ == "__main__":

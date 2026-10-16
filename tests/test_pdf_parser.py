@@ -77,11 +77,16 @@ def test_camelot_tables_skips_empty_tables():
         assert _camelot_tables("report.pdf") == []
 
 
-def test_camelot_tables_preserves_data_when_no_header_is_detected():
+def test_camelot_tables_preserves_data_when_first_row_has_empty_cell():
+    long_data_value = "123456789012345678901234567890"
     table = SimpleNamespace(
         df=SimpleNamespace(
             values=SimpleNamespace(
-                tolist=lambda: [["2021", "100"], ["2022", "120"]]
+                tolist=lambda: [
+                    ["2021", "", long_data_value],
+                    ["2022", "120"],
+                    ["2023", "130"],
+                ]
             )
         ),
         page="1",
@@ -94,10 +99,9 @@ def test_camelot_tables_preserves_data_when_no_header_is_detected():
     ):
         result = _camelot_tables("report.pdf")
 
-    assert result[0]["headers"] == ["Column 1", "Column 2"]
-    assert result[0]["rowCount"] == 2
-    assert "| 2021 | 100 |" in result[0]["markdown"]
-    assert result[0]["rows"] == [["2021", "100"], ["2022", "120"]]
+    assert result[0]["headers"] == ["Column 1", "Column 2", "Column 3"]
+    assert result[0]["rows"][0] == ["2021", "", long_data_value]
+    assert result[0]["rowCount"] == 3
 
 
 def test_camelot_tables_skips_malformed_table_and_keeps_valid_tables():
@@ -241,6 +245,8 @@ def test_pdf_parser_returns_metadata_without_tables():
     assert result["table_cnt"] == 0
     assert result["filingType"] == "Annual Report"
     assert result["warnings"] == []
+    assert result["chunks"][0]["pageNumber"] > 0
+    assert result["chunks"][0]["chunkIndex"] == 0
     open_pdf.assert_called_once_with("report.pdf")
 
 

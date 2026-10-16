@@ -62,6 +62,10 @@ dev = [
 sec = [
     "edgartools>=5.55.0",
 ]
+export = [
+    "pandas",
+    "pyarrow",
+]
 
 [project.urls]
 Homepage = "https://github.com/phil23-4/financial-pipeline"

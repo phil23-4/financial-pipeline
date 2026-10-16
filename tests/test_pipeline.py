@@ -6,8 +6,12 @@ import pytest
 
 from fin_pipeline.config.logger import serialize_json_log
 from fin_pipeline.db.connection import SurrealConnection
-from fin_pipeline.pipeline import run_html_content_pipeline, run_ingestion_pipeline
-from fin_pipeline.utils.html_parser import extract_filing_metadata
+from fin_pipeline.pipeline import (
+    process_mixed_directory,
+    run_html_content_pipeline,
+    run_ingestion_pipeline,
+)
+from fin_pipeline.utils.html_parser import extract_filing_metadata, parse_html_content
 from fin_pipeline.db import relations
 
 
@@ -23,6 +27,16 @@ async def test_successful_pipeline_ingestion(
     # 1. Setup mock returns for the PDF parser engine
     mock_pdf_parser.return_value = {
         "text": "Sample financial document text layer",
+        "chunks": [
+            {
+                "chunkIndex": 0,
+                "pageNumber": 1,
+                "sectionLabel": None,
+                "text": "ITEM 1. Business\nSample financial document text layer",
+                "charStart": None,
+                "charEnd": None,
+            }
+        ],
         "tables": [
             {
                 "tableIndex": 0,
@@ -48,6 +62,7 @@ async def test_successful_pipeline_ingestion(
         "stockCode": "9999",
         "exchange": "LSE",
         "filingType": "10-K",
+        "sourceType": "structured_filing",
         "referencedTickers": ["AAPL"],
     }
 
@@ -61,11 +76,68 @@ async def test_successful_pipeline_ingestion(
     assert called_id == "exchange_filing:test_filing_123"
     assert called_payload["companyTicker"] == "XYZ"
     assert called_payload["documentStatus"] == "PROCESSED"
+    assert called_payload["documentChunks"][0]["chunkIndex"] == 0
+    assert called_payload["documentChunks"][0]["sectionLabel"] == "business"
     assert called_payload["documentTableCnt"] == 1
     assert called_payload["documentTables"][0]["accuracy"] == 96.5
 
     # Verify graph edge constructor call was dispatched safely
     mock_graph_rel.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("fin_pipeline.pipeline.parse_document")
+@patch("fin_pipeline.pipeline.SurrealConnection")
+@patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
+async def test_ingestion_pipeline_labels_glossy_chunks_with_optional_llm(
+    mock_graph_rel, mock_surreal_conn, mock_parse_document, sample_pdf_path
+):
+    mock_parse_document.return_value = {
+        "text": "Governance report",
+        "chunks": [{"chunkIndex": 0, "pageNumber": 1, "text": "Governance report"}],
+        "tables": [],
+        "table_cnt": 0,
+        "reason": "PyMuPDF4LLM",
+    }
+    mock_db = AsyncMock()
+    mock_surreal_conn.return_value.__aenter__.return_value = mock_db
+    llm_callable = lambda _prompt: (
+        '{"sections":[{"startChunk":0,"endChunk":0,"label":"governance"}]}'
+    )
+
+    completed = await run_ingestion_pipeline(
+        {
+            "filingId": "glossy_report",
+            "companyTicker": "XYZ",
+            "stockCode": "9999",
+            "exchange": "LSE",
+            "filingType": "ANNUAL_REPORT",
+            "sourceType": "glossy_report",
+        },
+        sample_pdf_path,
+        source="LOCAL",
+        llm_callable=llm_callable,
+    )
+
+    assert completed is True
+    assert mock_db.upsert.call_args.args[1]["documentChunks"][0]["sectionLabel"] == (
+        "governance"
+    )
+    mock_graph_rel.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("fin_pipeline.pipeline.scan_documents", return_value=[("report.pdf", {})])
+@patch("fin_pipeline.pipeline.run_ingestion_pipeline", new_callable=AsyncMock)
+async def test_mixed_directory_passes_optional_llm_callable(
+    mock_run_ingestion, _mock_scan_documents, tmp_path
+):
+    llm_callable = lambda _prompt: '{"sections":[]}'
+
+    await process_mixed_directory(str(tmp_path), llm_callable=llm_callable)
+
+    mock_run_ingestion.assert_awaited_once()
+    assert mock_run_ingestion.call_args.kwargs["llm_callable"] is llm_callable
 
 
 @pytest.mark.asyncio
@@ -160,6 +232,24 @@ async def test_html_pipeline_generates_filing_id_when_missing(
     mock_graph_rel.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+@patch("fin_pipeline.pipeline.SurrealConnection")
+async def test_html_pipeline_dry_run_does_not_open_database(mock_surreal_conn):
+    completed = await run_html_content_pipeline(
+        {
+            "companyTicker": "XYZ",
+            "stockCode": "9999",
+            "exchange": "LSE",
+            "filingType": "10-K",
+        },
+        "<html><body>Annual Report</body></html>",
+        dry_run=True,
+    )
+
+    assert completed is True
+    mock_surreal_conn.assert_not_called()
+
+
 def test_serialize_json_log_uses_loguru_time_field():
     """Ensure JSON log serialization is compatible with Loguru's current record layout."""
     record = {
@@ -211,6 +301,20 @@ def test_extract_filing_metadata_finds_exchange_in_document_text():
     assert extract_filing_metadata(html)["exchange"] == "NYSE"
 
 
+def test_html_chunks_are_sequential_nonempty_pseudo_pages():
+    text = "A" * 1800 + "\n\n" + "B" * 1800 + "\n\n" + "C"
+    html = f"<html><body><p>{text}</p></body></html>"
+
+    chunks = parse_html_content(html)["chunks"]
+
+    assert [chunk["chunkIndex"] for chunk in chunks] == list(range(len(chunks)))
+    assert [chunk["pageNumber"] for chunk in chunks] == list(
+        range(1, len(chunks) + 1)
+    )
+    assert all(chunk["text"].strip() for chunk in chunks)
+    assert len(chunks) == 2
+
+
 @pytest.mark.asyncio
 @patch("fin_pipeline.pipeline.SurrealConnection")
 @patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
@@ -227,8 +331,11 @@ async def test_html_content_pipeline_ingests_without_file(
             "stockCode": "UNKNOWN",
             "exchange": "UNKNOWN",
             "filingType": "10-K",
+            "sourceType": "structured_filing",
         },
-        '<ix:nonNumeric name="dei:EntityRegistrantName">Apple Inc.</ix:nonNumeric>',
+        '<p>ITEM 1. Business</p>'
+        '<ix:nonNumeric name="dei:EntityRegistrantName">Apple Inc.</ix:nonNumeric>'
+        '<ix:nonFraction name="us-gaap:Assets" contextRef="current">42</ix:nonFraction>',
     )
 
     assert completed is True
@@ -236,6 +343,9 @@ async def test_html_content_pipeline_ingests_without_file(
     payload = mock_db.upsert.call_args.args[1]
     assert payload["documentType"] == "HTML"
     assert payload["stockName"] == "Apple Inc."
+    assert payload["documentChunks"][0]["pageNumber"] == 1
+    assert payload["documentChunks"][0]["sectionLabel"] == "business"
+    assert payload["xbrlFacts"]["assets"] == 42
     mock_graph_rel.assert_awaited_once()
 
 

@@ -1,6 +1,7 @@
 import glob
 import os
 import re
+from calendar import monthrange
 from collections.abc import Generator
 from typing import Any
 
@@ -15,7 +16,14 @@ from fin_pipeline.config.constants import (
 from fin_pipeline.utils.crypto import calculate_file_hash
 
 
-def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
+def _filing_date_for_year(year: int, fiscal_year_end_month: int) -> str:
+    last_day = monthrange(year, fiscal_year_end_month)[1]
+    return f"{year:04d}-{fiscal_year_end_month:02d}-{last_day:02d}"
+
+
+def _parse_local_pdf_metadata(
+    file_path: str, base_name: str, fiscal_year_end_month: int = 12
+) -> dict[str, Any]:
     """Parse identity and report details from a local PDF path and filename."""
     metadata = {
         "stockName": None,
@@ -23,6 +31,8 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
         "companyTicker": DEFAULT_TICKER,
         "filingType": DEFAULT_FILING_TYPE,
         "filingDate": None,
+        "sourceType": "unknown",
+        "reportingYear": None,
         "metadataSources": {},
         "metadataConfidence": {},
     }
@@ -54,7 +64,11 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
                 "stockCode": values["stock_code"] or DEFAULT_TICKER,
                 "companyTicker": parent_directory.upper(),
                 "filingType": report_type,
-                "filingDate": f"{values['year']}-12-31",
+                "filingDate": _filing_date_for_year(
+                    int(values["year"]), fiscal_year_end_month
+                ),
+                "sourceType": "glossy_report",
+                "reportingYear": int(values["year"]),
             }
         )
         metadata["metadataSources"].update(
@@ -96,7 +110,11 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
                     in {"ar", "annual_report", "annual-report"}
                     else DEFAULT_FILING_TYPE
                 ),
-                "filingDate": f"{values['year']}-12-31",
+                "filingDate": _filing_date_for_year(
+                    int(values["year"]), fiscal_year_end_month
+                ),
+                "sourceType": "glossy_report",
+                "reportingYear": int(values["year"]),
             }
         )
         metadata["metadataSources"].update(
@@ -135,6 +153,7 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
                 "esg report": "ESG_REPORT",
             }[report_name]
             metadata["filingType"] = report_type
+            metadata["sourceType"] = "glossy_report"
             metadata["metadataSources"]["filingType"] = "filename_report_type"
             metadata["metadataConfidence"]["filingType"] = 0.75
 
@@ -149,9 +168,19 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
                 metadata["filenameCompanyName"] = prefix
 
         if year_match:
-            metadata["filingDate"] = f"{year_match.group(0)}-12-31"
+            reporting_year = int(year_match.group(0))
+            metadata["filingDate"] = _filing_date_for_year(
+                reporting_year, fiscal_year_end_month
+            )
+            metadata["reportingYear"] = reporting_year
             metadata["metadataSources"]["filingDate"] = "filename_year_inferred"
             metadata["metadataConfidence"]["filingDate"] = 0.55
+
+    if metadata["sourceType"] != "glossy_report" and re.search(
+        r"(?i)(?<![A-Z0-9])(?:10-K|10-Q|20-F|40-F|8-K|S-1|S-3|S-4)(?![A-Z0-9])",
+        base_name,
+    ):
+        metadata["sourceType"] = "structured_filing"
 
     parent_directory = os.path.basename(os.path.dirname(file_path)).strip()
     if (
@@ -181,7 +210,7 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
 
 
 def scan_directory(
-    dir_path: str, recursive: bool = True
+    dir_path: str, recursive: bool = True, fiscal_year_end_month: int = 12
 ) -> Generator[tuple[str, dict[str, Any]], None, None]:
     """Scans local directories for financial PDF assets and prepares baseline meta attributes."""
     if not os.path.isdir(dir_path):
@@ -205,7 +234,9 @@ def scan_directory(
             log.debug(f"Hash calculation failed for {file_path}: {e}")
             short_hash = str(os.path.getsize(file_path))
 
-        local_metadata = _parse_local_pdf_metadata(file_path, base_name)
+        local_metadata = _parse_local_pdf_metadata(
+            file_path, base_name, fiscal_year_end_month
+        )
         metadata = {
             "filingId": f"local_{base_name}_{short_hash}",
             "companyTicker": local_metadata["companyTicker"],
@@ -215,6 +246,8 @@ def scan_directory(
             "stockName": local_metadata["stockName"],
             "title": base_name.replace("_", " ").replace("-", " ").title(),
             "filingDate": local_metadata["filingDate"],
+            "sourceType": local_metadata["sourceType"],
+            "reportingYear": local_metadata["reportingYear"],
             "referencedTickers": [],
             "metadataSources": {
                 "companyTicker": "directory_scan_default",
@@ -231,7 +264,7 @@ def scan_directory(
 
 
 def scan_documents(
-    dir_path: str, recursive: bool = True
+    dir_path: str, recursive: bool = True, fiscal_year_end_month: int = 12
 ) -> Generator[tuple[str, dict[str, Any]], None, None]:
     """Scan local directories for PDF and HTML assets."""
     if not os.path.isdir(dir_path):
@@ -259,7 +292,9 @@ def scan_documents(
             log.debug(f"Hash calculation failed for {file_path}: {e}")
             short_hash = str(os.path.getsize(file_path))
 
-        local_metadata = _parse_local_pdf_metadata(file_path, base_name)
+        local_metadata = _parse_local_pdf_metadata(
+            file_path, base_name, fiscal_year_end_month
+        )
         metadata = {
             "filingId": f"local_{base_name}_{short_hash}",
             "companyTicker": local_metadata["companyTicker"],
@@ -269,6 +304,8 @@ def scan_documents(
             "stockName": local_metadata["stockName"],
             "title": base_name.replace("_", " ").replace("-", " ").title(),
             "filingDate": local_metadata["filingDate"],
+            "sourceType": local_metadata["sourceType"],
+            "reportingYear": local_metadata["reportingYear"],
             "referencedTickers": [],
             "metadataSources": {
                 "companyTicker": "directory_scan_default",
@@ -343,6 +380,15 @@ def scan_sec_edgar_html_directory(
                         "filingType": filing_type,
                         "title": f"{ticker} {filing_type}",
                         "filingDate": None,
+                        "sourceType": (
+                            "structured_filing"
+                            if re.fullmatch(
+                                r"(?i)(?:10-K|10-Q|20-F|40-F|8-K|S-1|S-3|S-4)",
+                                filing_type,
+                            )
+                            else "unknown"
+                        ),
+                        "reportingYear": None,
                         "referencedTickers": [],
                         "metadataSources": {
                             "companyTicker": "directory_scan_sec",

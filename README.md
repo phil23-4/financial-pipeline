@@ -397,7 +397,17 @@ DEFINE FIELD filingId ON TABLE exchange_filing TYPE string;
 DEFINE FIELD companyTicker ON TABLE exchange_filing TYPE string;
 DEFINE FIELD stockName ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD filingType ON TABLE exchange_filing TYPE string;
+DEFINE FIELD sourceType ON TABLE exchange_filing TYPE string DEFAULT "unknown";
+DEFINE FIELD reportingYear ON TABLE exchange_filing TYPE option<int>;
 DEFINE FIELD documentText ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD documentChunks ON TABLE exchange_filing TYPE option<array<object>>;
+DEFINE FIELD documentChunks[*].chunkIndex ON TABLE exchange_filing TYPE int;
+DEFINE FIELD documentChunks[*].pageNumber ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD documentChunks[*].sectionLabel ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD documentChunks[*].text ON TABLE exchange_filing TYPE string;
+DEFINE FIELD documentChunks[*].charStart ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD documentChunks[*].charEnd ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD xbrlFacts ON TABLE exchange_filing TYPE option<object>;
 DEFINE FIELD documentTables ON TABLE exchange_filing TYPE option<array<object>>;
 DEFINE FIELD documentTables[*].accuracy ON TABLE exchange_filing TYPE option<float>;
 DEFINE FIELD referencedTickers ON TABLE exchange_filing TYPE option<array<string>>;
@@ -407,6 +417,8 @@ DEFINE FIELD updatedAt ON TABLE exchange_filing TYPE datetime;
 DEFINE TABLE has_filing SCHEMAFULL TYPE RELATION IN company OUT exchange_filing;
 DEFINE TABLE references_filing SCHEMAFULL TYPE RELATION IN exchange_filing OUT company;
 ```
+
+Pre-existing `exchange_filing` records without `sourceType` should be backfilled to `"unknown"`; the field default applies to new records.
 
 The database side is managed in:
 

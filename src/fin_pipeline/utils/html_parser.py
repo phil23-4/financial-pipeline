@@ -162,6 +162,50 @@ def extract_text_from_html(html_content: str) -> str:
     return text
 
 
+def _split_text_into_chunks(text: str, max_chars: int = 3000) -> list[dict[str, Any]]:
+    """Group paragraphs into approximate 3,000-character pseudo-pages."""
+    paragraphs: list[str] = []
+    for paragraph in text.split("\n\n"):
+        while len(paragraph) > max_chars:
+            split_at = paragraph.rfind(" ", 0, max_chars)
+            if split_at <= 0:
+                split_at = max_chars - 1
+            split_at += 1
+            paragraphs.append(paragraph[:split_at])
+            paragraph = paragraph[split_at:]
+        if paragraph:
+            paragraphs.append(paragraph)
+
+    page_texts: list[str] = []
+    current_paragraphs: list[str] = []
+    current_length = 0
+    for paragraph in paragraphs:
+        added_length = len(paragraph) + (2 if current_paragraphs else 0)
+        if current_paragraphs and current_length + added_length > max_chars:
+            page_texts.append("\n\n".join(current_paragraphs))
+            current_paragraphs = []
+            current_length = 0
+            added_length = len(paragraph)
+        current_paragraphs.append(paragraph)
+        current_length += added_length
+
+    if current_paragraphs:
+        page_texts.append("\n\n".join(current_paragraphs))
+
+    return [
+        {
+            "chunkIndex": chunk_index,
+            "pageNumber": chunk_index + 1,
+            "sectionLabel": None,
+            "text": page_text,
+            "charStart": None,
+            "charEnd": None,
+        }
+        for chunk_index, page_text in enumerate(page_texts)
+        if page_text.strip()
+    ]
+
+
 def extract_tables_from_html(html_content: str) -> tuple:
     """Extract HTML tables and convert to markdown format.
 
@@ -220,6 +264,7 @@ def parse_html_content(html_content: str) -> dict[str, Any]:
     tables, table_cnt, reason = extract_tables_from_html(html_content)
     return {
         "text": text,
+        "chunks": _split_text_into_chunks(text),
         "tables": tables,
         "table_cnt": table_cnt,
         "reason": reason,
@@ -237,7 +282,13 @@ def parse_html_file(file_path: str) -> dict[str, Any]:
         Dictionary with extracted content and metadata
     """
     if not os.path.exists(file_path):
-        return {"text": "", "tables": [], "table_cnt": 0, "reason": "File not found"}
+        return {
+            "text": "",
+            "chunks": [],
+            "tables": [],
+            "table_cnt": 0,
+            "reason": "File not found",
+        }
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -249,6 +300,7 @@ def parse_html_file(file_path: str) -> dict[str, Any]:
     except OSError as e:
         return {
             "text": "",
+            "chunks": [],
             "tables": [],
             "table_cnt": 0,
             "reason": f"Read error: {e!s}",
@@ -259,6 +311,7 @@ def parse_html_file(file_path: str) -> dict[str, Any]:
     except (AttributeError, TypeError, ValueError) as e:
         return {
             "text": "",
+            "chunks": [],
             "tables": [],
             "table_cnt": 0,
             "reason": f"Parse error: {e!s}",

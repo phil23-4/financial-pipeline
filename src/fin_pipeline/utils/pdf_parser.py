@@ -2,6 +2,7 @@ import os
 import re
 import tempfile
 import zlib
+from collections import Counter
 from collections.abc import Iterable
 from math import isfinite
 from typing import Any, TypedDict
@@ -31,6 +32,7 @@ class ExtractedTable(TypedDict):
 
 class PdfParseResult(TypedDict, total=False):
     text: str
+    chunks: list[dict[str, Any]]
     tables: list[ExtractedTable]
     table_cnt: int
     reason: str
@@ -258,7 +260,7 @@ def extract_filing_metadata(
     return result
 
 
-def _clean_markdown_text(page_texts: Iterable[str]) -> str:
+def _clean_markdown_pages(page_texts: Iterable[str]) -> list[str]:
     """Remove repeated page furniture and normalize common PDF text artifacts."""
     pages = [[line.strip() for line in text.splitlines()] for text in page_texts]
     line_counts: dict[str, int] = {}
@@ -291,6 +293,11 @@ def _clean_markdown_text(page_texts: Iterable[str]) -> str:
             cleaned.pop()
         cleaned_pages.append("\n".join(cleaned))
 
+    return cleaned_pages
+
+
+def _clean_markdown_text(page_texts: Iterable[str]) -> str:
+    cleaned_pages = _clean_markdown_pages(page_texts)
     markdown = "\n\n".join(page for page in cleaned_pages if page)
     markdown = re.sub(r"\n{3,}", "\n\n", markdown)
     return markdown.strip()
@@ -380,8 +387,6 @@ def _camelot_tables(
 
 def _looks_like_table_header(first_row: list[str], body: list[list[str]]) -> bool:
     """Conservatively decide whether the first extracted row is a header."""
-    if not body or any(not cell for cell in first_row):
-        return True
     header_terms = (
         "asset",
         "category",
@@ -395,9 +400,20 @@ def _looks_like_table_header(first_row: list[str], body: list[list[str]]) -> boo
         "year",
     )
     normalized = [cell.casefold() for cell in first_row]
-    return any(
-        any(term in cell for term in header_terms) for cell in normalized
+    body_cell_counts = Counter(len(row) for row in body)
+    modal_body_cell_count = (
+        body_cell_counts.most_common(1)[0][0] if body_cell_counts else None
     )
+    signals = (
+        all(cell.strip() for cell in first_row),
+        any(
+            any(term in cell for term in header_terms) for cell in normalized
+        ),
+        all(len(cell) < 30 for cell in first_row),
+        modal_body_cell_count is not None
+        and len(first_row) == modal_body_cell_count,
+    )
+    return sum(signals) >= 2
 
 
 def _exec_ocr_without_tiny_image_noise(*args: Any, **kwargs: Any) -> Any:
@@ -451,9 +467,14 @@ def _extract_markdown_by_page(
                 ocr_function=_exec_ocr_without_tiny_image_noise,
             )
             if isinstance(page_chunks, str):
-                chunks.append({"text": page_chunks})
+                chunks.append(
+                    {"text": page_chunks, "_source_page_number": page_number + 1}
+                )
             else:
-                chunks.extend(page_chunks)
+                chunks.extend(
+                    {**chunk, "_source_page_number": page_number + 1}
+                    for chunk in page_chunks
+                )
         except (
             pymupdf.mupdf.FzErrorBase,
             OSError,
@@ -516,10 +537,23 @@ def parse_pdf_layout(
                 )
 
         if isinstance(page_chunks, str):
-            page_texts = [page_chunks]
-        else:
-            page_texts = [chunk.get("text", "") for chunk in page_chunks]
+            page_chunks = [{"text": page_chunks}]
+        page_texts = [chunk.get("text", "") for chunk in page_chunks]
+        cleaned_pages = _clean_markdown_pages(page_texts)
         text = _clean_markdown_text(page_texts)
+        document_chunks = [
+            {
+                "chunkIndex": chunk_index,
+                "pageNumber": chunk.get("_source_page_number", chunk_index + 1),
+                "sectionLabel": None,
+                "text": cleaned_page,
+                "charStart": None,
+                "charEnd": None,
+            }
+            for chunk_index, (chunk, cleaned_page) in enumerate(
+                zip(page_chunks, cleaned_pages)
+            )
+        ]
         tables = _camelot_tables(file_path, warnings) if extract_tables else []
         if not extract_tables:
             warnings.append("Camelot table extraction disabled")
@@ -538,6 +572,7 @@ def parse_pdf_layout(
 
     result: PdfParseResult = {
         "text": text,
+        "chunks": document_chunks,
         "tables": tables,
         "table_cnt": len(tables),
         "reason": extraction_reason,

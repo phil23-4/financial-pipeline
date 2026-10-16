@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import csv
 import os
+from datetime import date, datetime
 from collections.abc import Iterator
 from pathlib import Path
 
 from fin_pipeline.config.logger import pipeline_logger as log
 from fin_pipeline.config.settings import EDGAR_IDENTITY
+
+_STRUCTURED_FORMS = {"10-K", "10-Q", "20-F", "40-F", "8-K", "S-1", "S-3", "S-4"}
 
 
 def read_company_csv(csv_path: str) -> Iterator[dict]:
@@ -91,15 +94,27 @@ def _stream_filings_from_csv(
                 continue
 
             accession = filing.accession_no
+            report_date = getattr(filing, "report_date", None)
+            if isinstance(report_date, (date, datetime)):
+                reporting_year = report_date.year
+            elif report_date:
+                reporting_year = date.fromisoformat(str(report_date)[:10]).year
+            else:
+                reporting_year = None
             metadata = {
                 "filingId": f"sec_{ticker.upper()}_{accession}",
                 "companyTicker": ticker.upper(),
                 "stockCode": "UNKNOWN",
                 "exchange": "UNKNOWN",
                 "filingType": filing.form,
+                "sourceType": (
+                    "structured_filing"
+                    if str(filing.form).upper() in _STRUCTURED_FORMS
+                    else "unknown"
+                ),
+                "reportingYear": reporting_year,
                 "stockName": filing.company,
-                "filingDate": getattr(filing, "report_date", None)
-                or filing.filing_date,
+                "filingDate": report_date or filing.filing_date,
                 "referencedTickers": [],
                 "cik": str(filing.cik).zfill(10),
             }

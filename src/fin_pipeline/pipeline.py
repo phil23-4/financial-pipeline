@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Callable
 
 from fin_pipeline.config.constants import (
     FILE_TYPE_HTML,
@@ -24,6 +25,11 @@ from fin_pipeline.utils.html_parser import (
     parse_html_file,
 )
 from fin_pipeline.utils.pdf_parser import parse_pdf_layout
+from fin_pipeline.utils.sections import (
+    label_sections_glossy,
+    label_sections_structured,
+)
+from fin_pipeline.utils.xbrl_facts import extract_xbrl_facts
 
 
 def _fallback_filing_id(file_path: str) -> str:
@@ -91,7 +97,11 @@ def parse_document(file_path: str) -> dict:
 
 
 async def run_ingestion_pipeline(
-    metadata_input: dict, file_path: str, source: str, dry_run: bool = False
+    metadata_input: dict,
+    file_path: str,
+    source: str,
+    dry_run: bool = False,
+    llm_callable: Callable[[str], str] | None = None,
 ) -> bool:
     """Execute complete document ingestion pipeline with extraction, validation, and database commit.
 
@@ -136,6 +146,14 @@ async def run_ingestion_pipeline(
                 f"🔍 Executing layout parser vector maps for target: {os.path.basename(file_path)}"
             )
             parsed = parse_document(file_path)
+            if payload.get("sourceType") == "structured_filing":
+                parsed["chunks"] = label_sections_structured(
+                    parsed.get("chunks", [])
+                )
+            elif payload.get("sourceType") == "glossy_report" and llm_callable:
+                parsed["chunks"] = label_sections_glossy(
+                    parsed.get("chunks", []), llm_callable
+                )
             if detect_file_type(file_path) == FILE_TYPE_HTML:
                 accession_number = str(metadata_input.get("filingId", "")).removeprefix(
                     "sec_"
@@ -150,6 +168,7 @@ async def run_ingestion_pipeline(
                     "documentSize": os.path.getsize(file_path),
                     "documentText": parsed["text"],
                     "documentTextLen": len(parsed["text"]),
+                    "documentChunks": parsed.get("chunks", []),
                     "documentTables": parsed["tables"],
                     "documentTableCnt": parsed["table_cnt"],
                     "documentStatus": STATUS_PROCESSED,
@@ -246,7 +265,11 @@ async def run_ingestion_pipeline(
 
 
 async def run_html_content_pipeline(
-    metadata_input: dict, html_content: str, source: str = "SEC", dry_run: bool = False
+    metadata_input: dict,
+    html_content: str,
+    source: str = "SEC",
+    dry_run: bool = False,
+    llm_callable: Callable[[str], str] | None = None,
 ) -> bool:
     """Parse and ingest SEC HTML held in memory, without writing it to disk."""
     supplied_filing_id = metadata_input.get("filingId")
@@ -263,6 +286,12 @@ async def run_html_content_pipeline(
     }
     try:
         parsed = parse_html_content(html_content)
+        if payload.get("sourceType") == "structured_filing":
+            parsed["chunks"] = label_sections_structured(parsed.get("chunks", []))
+        elif payload.get("sourceType") == "glossy_report" and llm_callable:
+            parsed["chunks"] = label_sections_glossy(
+                parsed.get("chunks", []), llm_callable
+            )
         accession_number = str(filing_id).removeprefix("sec_")
         parsed = enrich_filing_metadata_with_edgartools(parsed, accession_number)
         content_bytes = html_content.encode("utf-8")
@@ -272,11 +301,13 @@ async def run_html_content_pipeline(
                 "documentSize": len(content_bytes),
                 "documentText": parsed["text"],
                 "documentTextLen": len(parsed["text"]),
+                "documentChunks": parsed.get("chunks", []),
                 "documentTables": parsed["tables"],
                 "documentTableCnt": parsed["table_cnt"],
                 "documentStatus": "PROCESSED",
                 "documentStatusReason": parsed["reason"],
                 "documentType": "HTML",
+                "xbrlFacts": extract_xbrl_facts(html_content),
             }
         )
         metadata_sources = parsed.get("metadataSources")
@@ -312,6 +343,12 @@ async def run_html_content_pipeline(
     try:
         validated_record = ExchangeFilingModel(**payload).model_dump()
         record_id = f"{FILING_TABLE}:{validated_record['filingId']}"
+        if dry_run:
+            log.info(
+                f"🧪 Dry run validated streamed filing {record_id}; no database changes made"
+            )
+            return True
+
         async with SurrealConnection() as db:
             await db.delete_record(record_id)
             await db.upsert(record_id, validated_record)
@@ -331,12 +368,6 @@ async def run_html_content_pipeline(
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
         log.error(f"📡 Stream database commit failed for {filing_id}: {exc}")
         return False
-
-    if dry_run:
-        log.info(
-            f"🧪 Dry run validated streamed filing {record_id}; no database changes made"
-        )
-        return True
 
 
 async def process_entire_directory(
@@ -395,6 +426,7 @@ async def process_mixed_directory(
     source_type: str = "LOCAL",
     concurrency_limit: int = 3,
     dry_run: bool = False,
+    llm_callable: Callable[[str], str] | None = None,
 ):
     """Recursively ingest both PDF and HTML files from a local directory."""
     if not os.path.isdir(dir_path):
@@ -410,7 +442,11 @@ async def process_mixed_directory(
         async with semaphore:
             try:
                 completed = await run_ingestion_pipeline(
-                    meta, file_path, source=source_type, dry_run=dry_run
+                    meta,
+                    file_path,
+                    source=source_type,
+                    dry_run=dry_run,
+                    llm_callable=llm_callable,
                 )
                 if not completed:
                     errors.append(f"Document processing failed for {file_path}")

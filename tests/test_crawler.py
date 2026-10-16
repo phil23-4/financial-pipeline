@@ -151,6 +151,37 @@ def test_scan_directory_parses_non_sec_report_filename_types(
     assert result["filingDate"].endswith("-12-31")
 
 
+@pytest.mark.parametrize(
+    ("filename", "source_type"),
+    [
+        ("ACME_Annual_Report_2024.pdf", "glossy_report"),
+        ("ACME_10-K_2024.pdf", "structured_filing"),
+    ],
+)
+def test_scan_documents_classifies_report_source_type(tmp_path, filename, source_type):
+    (tmp_path / filename).write_bytes(b"%PDF-1.4")
+
+    result = next(iter(scan_documents(str(tmp_path), recursive=False)))[1]
+
+    assert result["sourceType"] == source_type
+    assert result["reportingYear"] == 2024
+
+
+def test_scan_documents_uses_custom_fiscal_year_end_month(tmp_path):
+    (tmp_path / "ACME_Annual_Report_2024.pdf").write_bytes(b"%PDF-1.4")
+
+    result = next(
+        iter(
+            scan_documents(
+                str(tmp_path), recursive=False, fiscal_year_end_month=3
+            )
+        )
+    )[1]
+
+    assert result["filingDate"] == "2024-03-31"
+    assert result["reportingYear"] == 2024
+
+
 def test_scan_directory_parses_code_prefix_in_website_filename(tmp_path):
     report = tmp_path / "131662_Annual_Report_en_2018.pdf"
     report.write_bytes(b"%PDF-1.4")

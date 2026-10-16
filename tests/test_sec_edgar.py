@@ -65,6 +65,8 @@ def test_stream_filters_override_csv_filters(tmp_path, monkeypatch):
         trigger_full_load=True,
     )
     assert results[0][1]["filingId"] == "sec_AAPL_0000320193-25-000079"
+    assert results[0][1]["sourceType"] == "structured_filing"
+    assert results[0][1]["reportingYear"] == 2025
 
 
 def test_stream_cli_rejects_reversed_year_range(tmp_path):
