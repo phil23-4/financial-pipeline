@@ -1,4 +1,7 @@
-from datetime import UTC
+import hashlib
+import re
+import unicodedata
+from datetime import UTC, datetime
 
 from loguru import logger as log
 from surrealdb import Surreal
@@ -9,41 +12,107 @@ from fin_pipeline.db.db import surreal_query
 from fin_pipeline.utils.db_utils import quote_record_id
 
 
+def _normalized_company_name(company_name: str) -> str:
+    """Normalize a company name for use in a stable company identity."""
+    normalized = unicodedata.normalize("NFKC", company_name).casefold()
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _company_key(ticker: str, company_name: str) -> str:
+    """Build a stable key from a ticker and normalized company name."""
+    identity = f"{ticker.strip().upper()}\0{_normalized_company_name(company_name)}"
+    return f"co_{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+
+
+def _query_rows(response: list | dict | None) -> list[dict]:
+    if isinstance(response, list) and response and isinstance(response[0], dict):
+        rows = response[0].get("result")
+        return rows if isinstance(rows, list) else []
+    return []
+
+
 async def ensure_company_exists(
     db: Surreal,
     ticker: str,
     company_name: str | None = None,
     exchange: str | None = None,
 ):
-    """Auto-create a company record if it doesn't exist."""
+    """Find or create a company record identified by ticker and company name."""
     if not COMPANY_TABLE:
         log.debug("Skipping company graph relation because COMPANY_TABLE is unset")
         return None
 
-    # Check if company exists
+    if (
+        not ticker.strip()
+        or not company_name
+        or not _normalized_company_name(company_name)
+    ):
+        log.warning(
+            "Cannot create company graph relation without both a ticker and company name"
+        )
+        return None
+
+    normalized_ticker = ticker.strip().upper()
+    normalized_name = _normalized_company_name(company_name)
+    company_key = _company_key(normalized_ticker, company_name)
+
     check_res = await db.query(
-        f"SELECT id FROM {COMPANY_TABLE} WHERE ticker = $ticker LIMIT 1;",
-        {"ticker": ticker},
+        f"SELECT id FROM {COMPANY_TABLE} "
+        f"WHERE companyKey = {_surrealql_literal(company_key)} LIMIT 1;"
     )
-    check_data = check_res[0].get("result") if check_res else None
+    check_data = _query_rows(check_res)
+    if check_data:
+        return check_data[0]["id"]
 
-    if check_data and len(check_data) > 0:
-        return check_data[0]["id"]  # Already exists
+    legacy_res = await db.query(
+        f"SELECT id, companyName FROM {COMPANY_TABLE} "
+        f"WHERE ticker = {_surrealql_literal(normalized_ticker)};"
+    )
+    for legacy_company in _query_rows(legacy_res):
+        legacy_name = _normalized_company_name(
+            str(legacy_company.get("companyName") or "")
+        )
+        if legacy_name != normalized_name and legacy_name != normalized_ticker.casefold():
+            continue
+        legacy_id = str(legacy_company["id"])
+        migration_sql = (
+            f"UPDATE {quote_record_id(legacy_id)} MERGE "
+            f"{{ companyKey: {_surrealql_literal(company_key)}, "
+            f"companyName: {_surrealql_literal(company_name.strip())} }};"
+        )
+        migration_result = surreal_query(migration_sql, timeout=30)
+        if isinstance(migration_result, dict) and migration_result.get("error"):
+            log.warning(
+                f"Could not assign company key to existing company {legacy_id}: "
+                f"{migration_result['error'][:200]}"
+            )
+            return None
+        if isinstance(migration_result, list) and any(
+            item.get("status") == "ERR"
+            for item in migration_result
+            if isinstance(item, dict)
+        ):
+            log.warning(
+                f"Could not assign company key to existing company {legacy_id}: "
+                f"{migration_result}"
+            )
+            return None
+        return legacy_id
 
-    # Create new company record using UPSERT
-    from datetime import datetime
-
-    company_id = f"{COMPANY_TABLE}:{ticker}"
+    company_id = f"{COMPANY_TABLE}:{company_key}"
     company_payload = {
-        "ticker": ticker,
-        "companyName": company_name or ticker,
+        "companyKey": company_key,
+        "ticker": normalized_ticker,
+        "companyName": company_name.strip(),
         "updatedAt": datetime.now(UTC),
     }
     if exchange:
         company_payload["exchange"] = exchange
 
-    # Use UPSERT with SurrealQL literal
-    sql = f"UPSERT {company_id} CONTENT {_surrealql_literal(company_payload)};"
+    sql = (
+        f"UPSERT {quote_record_id(company_id)} "
+        f"CONTENT {_surrealql_literal(company_payload)};"
+    )
     result = surreal_query(sql, timeout=30)
 
     if isinstance(result, dict) and result.get("error"):

@@ -197,7 +197,9 @@ DEFINE FIELD IF NOT EXISTS ticker     ON TABLE company TYPE string;
 DEFINE FIELD IF NOT EXISTS companyName ON TABLE company TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS exchange   ON TABLE company TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS updatedAt  ON TABLE company TYPE option<datetime>;
-DEFINE INDEX IF NOT EXISTS idx_company_ticker ON TABLE company COLUMNS ticker UNIQUE;
+DEFINE FIELD IF NOT EXISTS companyKey ON TABLE company TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS idx_company_ticker_lookup ON TABLE company COLUMNS ticker;
+DEFINE INDEX IF NOT EXISTS idx_company_key ON TABLE company COLUMNS companyKey UNIQUE;
 
 -- Filing table (SCHEMAFULL for type safety)
 DEFINE TABLE IF NOT EXISTS exchange_filing SCHEMAFULL;
@@ -279,6 +281,11 @@ def initialize_schema() -> bool:
     if isinstance(result, dict) and result.get("error"):
         log(f"  Schema init warning: {result['error'][:300]}")
         return False
+    if isinstance(result, list) and any(
+        item.get("status") == "ERR" for item in result if isinstance(item, dict)
+    ):
+        log(f"  Schema init warning: {result}")
+        return False
     log("  Schema initialized successfully")
     if COMPANY_TABLE:
         log(f"  Graph edges enabled (company table: {COMPANY_TABLE})")
@@ -303,6 +310,27 @@ def initialize_schema() -> bool:
         )
     else:
         log("  Migration: documentContent field removed (no longer storing blobs)")
+
+    company_index_migration = surreal_query(
+        "REMOVE INDEX IF EXISTS idx_company_ticker ON TABLE company;",
+        timeout=30,
+    )
+    if isinstance(company_index_migration, dict) and company_index_migration.get("error"):
+        log(
+            "  Company identity migration failed while removing the unique ticker "
+            f"index: {company_index_migration['error'][:200]}"
+        )
+        return False
+    if isinstance(company_index_migration, list) and any(
+        item.get("status") == "ERR"
+        for item in company_index_migration
+        if isinstance(item, dict)
+    ):
+        log(
+            "  Company identity migration failed while removing the unique ticker "
+            f"index: {company_index_migration}"
+        )
+        return False
 
     if COMPANY_TABLE:
         relation_migration = surreal_query(

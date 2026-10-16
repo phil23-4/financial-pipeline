@@ -29,6 +29,21 @@ def test_scan_documents_includes_pdf_and_html_files(tmp_path):
     assert {path.rsplit(".", 1)[-1] for path, _ in results} == {"pdf", "html"}
 
 
+@pytest.mark.parametrize("extension", ["pdf", "html"])
+def test_scan_documents_extracts_ticker_from_ticker_named_folder(
+    tmp_path, extension
+):
+    ticker_dir = tmp_path / "romania" / "TLV"
+    ticker_dir.mkdir(parents=True)
+    (ticker_dir / f"annual-report.{extension}").write_text("report")
+
+    _, metadata = next(iter(scan_documents(str(tmp_path))))
+
+    assert metadata["companyTicker"] == "TLV"
+    assert metadata["metadataSources"]["companyTicker"] == "parent_directory"
+    assert metadata["stockName"] is None
+
+
 def test_scan_directory_parses_local_filing_path_and_filename(tmp_path):
     report_dir = tmp_path / "romania" / "Banca Transilvania"
     report_dir.mkdir(parents=True)
@@ -38,6 +53,7 @@ def test_scan_directory_parses_local_filing_path_and_filename(tmp_path):
     result = next(iter(scan_directory(str(tmp_path))))[1]
 
     assert result["stockName"] == "Banca Transilvania"
+    assert result["companyTicker"] == "UNKNOWN"
     assert result["stockCode"] == "131662"
     assert result["filingType"] == "ANNUAL_REPORT"
     assert result["filingDate"] == "2018-12-31"

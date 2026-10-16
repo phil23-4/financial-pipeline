@@ -140,7 +140,10 @@ class SurrealConnection:
         await self.db.connect()
         await self.db.signin(DB_AUTH)
         await self.db.use(namespace=DB_AUTH["namespace"], database=DB_AUTH["database"])
-        initialize_schema()
+        if not initialize_schema():
+            await self.db.close()
+            self.db = None
+            raise RuntimeError("SurrealDB schema initialization failed")
         return self.db
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -162,7 +165,10 @@ class SurrealPooledConnection:
 
     async def __aenter__(self):
         self.db = await self.pool.get_connection()
-        initialize_schema()
+        if not initialize_schema():
+            await self.pool.close()
+            self.db = None
+            raise RuntimeError("SurrealDB schema initialization failed")
         return self.db
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

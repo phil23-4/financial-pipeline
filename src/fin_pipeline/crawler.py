@@ -153,13 +153,24 @@ def _parse_local_pdf_metadata(file_path: str, base_name: str) -> dict[str, Any]:
             metadata["metadataSources"]["filingDate"] = "filename_year_inferred"
             metadata["metadataConfidence"]["filingDate"] = 0.55
 
+    parent_directory = os.path.basename(os.path.dirname(file_path)).strip()
+    if (
+        metadata["companyTicker"] == DEFAULT_TICKER
+        and len(parent_directory) <= 10
+        and re.fullmatch(r"[A-Z0-9]+(?:[.-][A-Z0-9]+)*", parent_directory)
+        and parent_directory != DEFAULT_TICKER
+    ):
+        metadata["companyTicker"] = parent_directory
+        metadata["metadataSources"]["companyTicker"] = "parent_directory"
+        metadata["metadataConfidence"]["companyTicker"] = 0.8
+
     company_path = os.path.dirname(file_path)
     company_name = os.path.basename(company_path).replace("_", " ").strip()
     if metadata.get("filenameCompanyName"):
         metadata["stockName"] = metadata["filenameCompanyName"]
         metadata["metadataSources"]["stockName"] = "filename_company_name"
         metadata["metadataConfidence"]["stockName"] = 0.65
-    elif company_name and company_name != ".":
+    elif company_name and company_name != "." and metadata["companyTicker"] == DEFAULT_TICKER:
         metadata["stockName"] = company_name
         metadata["metadataSources"]["stockName"] = "parent_directory"
         metadata["metadataConfidence"]["stockName"] = 0.95

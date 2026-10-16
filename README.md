@@ -188,6 +188,8 @@ The supported filename pattern is:
 
 Ticker and exchange cannot be inferred reliably from this layout, so they remain `UNKNOWN` and `LOCAL_FS` respectively unless supplied through another metadata source. Files that do not match the pattern retain the scanner defaults.
 
+For mixed local scans, an uppercase ticker-like immediate parent folder (for example, `TLV` or `AAPL`) is also used as `companyTicker` when the filename does not provide it. Company-name folders with spaces or lowercase names are not treated as tickers.
+
 The scanner also supports country/ticker directories with structured filenames:
 
 ```text
@@ -382,10 +384,13 @@ Example schema concepts:
 
 ```surrealql
 DEFINE TABLE company SCHEMAFULL;
-DEFINE FIELD ticker ON TABLE company TYPE string UNIQUE;
+DEFINE FIELD ticker ON TABLE company TYPE string;
 DEFINE FIELD companyName ON TABLE company TYPE option<string>;
 DEFINE FIELD exchange ON TABLE company TYPE option<string>;
+DEFINE FIELD companyKey ON TABLE company TYPE option<string>;
 DEFINE FIELD updatedAt ON TABLE company TYPE option<datetime>;
+DEFINE INDEX idx_company_ticker_lookup ON TABLE company COLUMNS ticker;
+DEFINE INDEX idx_company_key ON TABLE company COLUMNS companyKey UNIQUE;
 
 DEFINE TABLE exchange_filing SCHEMAFULL;
 DEFINE FIELD filingId ON TABLE exchange_filing TYPE string;
@@ -409,6 +414,13 @@ The database side is managed in:
 - `src/fin_pipeline/db/connection.py`
 - `src/fin_pipeline/db/connection_pool.py`
 - `src/fin_pipeline/db/relations.py`
+
+Company graph nodes are keyed by a deterministic hash of the uppercase ticker
+and the case-folded, whitespace-normalized company name. This keeps same-ticker
+companies with different names separate. If the company name is unavailable,
+the pipeline skips creating a company node rather than merging it by ticker
+alone. Existing company nodes are assigned their key when a matching company
+is next ingested.
 
 ## Validation and error handling
 
