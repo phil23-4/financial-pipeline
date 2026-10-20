@@ -493,7 +493,7 @@ def _extract_markdown_by_page(
 def parse_pdf_layout(
     file_path: str,
     force_ocr: bool = False,
-    extract_tables: bool = False,
+    extract_tables: bool = True,
     use_ocr: bool = True,
 ) -> PdfParseResult:
     """Extract Markdown, tables, and metadata, optionally using native OCR."""

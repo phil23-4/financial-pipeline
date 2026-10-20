@@ -144,22 +144,29 @@ def enrich_filing_metadata_with_edgartools(
 
 
 def extract_text_from_html(html_content: str) -> str:
-    """Extract plain text from HTML content, removing scripts and styles."""
+    """Extract visible text from HTML while removing hidden Inline XBRL noise."""
     soup = BeautifulSoup(html_content, "html.parser")
+
+    for tag in soup.find_all(["ix:header", "ix:hidden", "ix:references"]):
+        tag.decompose()
+
+    for tag in soup.find_all(
+        style=re.compile(
+            r"display\s*:\s*none|visibility\s*:\s*hidden",
+            re.I,
+        )
+    ):
+        tag.decompose()
 
     # Remove script and style elements
     for script in soup(["script", "style"]):
         script.decompose()
 
-    # Get text
-    text = soup.get_text()
+    text = soup.get_text("\n", strip=True)
 
-    # Clean up whitespace
-    lines = (line.strip() for line in text.splitlines())
-    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-    text = "\n".join(chunk for chunk in chunks if chunk)
-
-    return text
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    return text.strip()
 
 
 def _split_text_into_chunks(text: str, max_chars: int = 3000) -> list[dict[str, Any]]:

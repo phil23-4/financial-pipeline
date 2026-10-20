@@ -13,7 +13,12 @@ from fin_pipeline.pipeline import (
     run_html_content_pipeline,
     run_ingestion_pipeline,
 )
-from fin_pipeline.utils.html_parser import extract_filing_metadata, parse_html_content
+from fin_pipeline.utils.html_parser import (
+    extract_filing_metadata,
+    extract_text_from_html,
+    parse_html_content,
+)
+from fin_pipeline.utils.xbrl_facts import extract_xbrl_facts
 
 
 @pytest.mark.asyncio
@@ -299,6 +304,47 @@ def test_extract_filing_metadata_from_inline_xbrl():
     assert result["cik"] is None
     assert result["metadataSources"]["stockName"] == "html_ixbrl"
     assert result["metadataConfidence"]["filingDate"] >= 0.9
+
+
+def test_html_text_excludes_xbrl_header():
+    html = """
+    <html><body>
+      <ix:header>
+        https://taxonomy.example.com/us-gaap/2024
+        context-id-should-not-appear
+        fact-reference-should-not-appear
+        <ix:hidden>hidden inline XBRL metadata</ix:hidden>
+      </ix:header>
+      <p>Visible annual report body text.</p>
+      <ix:nonFraction name="us-gaap:Assets" contextRef="current">42</ix:nonFraction>
+    </body></html>
+    """
+
+    text = extract_text_from_html(html)
+    facts = extract_xbrl_facts(html)
+
+    assert "taxonomy.example.com" not in text
+    assert "context-id-should-not-appear" not in text
+    assert "fact-reference-should-not-appear" not in text
+    assert "hidden inline XBRL metadata" not in text
+    assert "Visible annual report body text." in text
+    assert facts["assets"] == 42
+
+
+def test_html_text_preserves_line_breaks():
+    html = """
+    <html><body>
+      <h2>ITEM 1.</h2>
+      <h2>BUSINESS</h2>
+      <p>Our company is a technology firm.</p>
+    </body></html>
+    """
+
+    text = extract_text_from_html(html)
+    assert "ITEM 1." in text
+    assert "BUSINESS" in text
+    assert "ITEM 1.BUSINESS" not in text
+    assert "ITEM 1.\nBUSINESS" in text or "ITEM 1.\n\nBUSINESS" in text
 
 
 def test_extract_filing_metadata_finds_exchange_in_document_text():
