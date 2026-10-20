@@ -568,17 +568,24 @@ async def process_sec_edgar_csv_stream(
     dry_run: bool = False,
 ):
     """Fetch and ingest SEC filings from CSV without local files."""
-    from fin_pipeline.sec_edgar import stream_filings_from_csv
+    from fin_pipeline.sec_edgar import SecEdgarFetchError, stream_filings_from_csv
 
     processed = 0
-    for html_content, metadata in stream_filings_from_csv(
-        csv_path, year_range=year_range, forms=forms
-    ):
-        processed += 1
-        if not await run_html_content_pipeline(metadata, html_content, dry_run=dry_run):
-            log.error(
-                "⏹️ Stopping streamed SEC batch because the current filing failed."
-            )
-            return False
+    try:
+        for html_content, metadata in stream_filings_from_csv(
+            csv_path, year_range=year_range, forms=forms
+        ):
+            processed += 1
+            if not await run_html_content_pipeline(
+                metadata, html_content, dry_run=dry_run
+            ):
+                log.error(
+                    "⏹️ Stopping streamed SEC batch because the current filing failed."
+                )
+                return False
+    except SecEdgarFetchError as exc:
+        log.error(f"⏹️ SEC stream stopped because a filing could not be downloaded: {exc}")
+        return False
+
     log.info(f"📋 Streamed {processed} SEC filings from CSV sequentially.")
     return True

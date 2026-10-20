@@ -3,9 +3,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from httpx import ReadTimeout
 
 from fin_pipeline.cli import main
-from fin_pipeline.sec_edgar import read_company_csv, stream_filings_from_csv
+from fin_pipeline.sec_edgar import (
+    SecEdgarFetchError,
+    _fetch_filing_html,
+    read_company_csv,
+    stream_filings_from_csv,
+)
 
 
 def test_read_company_csv_normalizes_rows(tmp_path):
@@ -67,6 +73,41 @@ def test_stream_filters_override_csv_filters(tmp_path, monkeypatch):
     assert results[0][1]["filingId"] == "sec_AAPL_0000320193-25-000079"
     assert results[0][1]["sourceType"] == "structured_filing"
     assert results[0][1]["reportingYear"] == 2025
+
+
+def test_fetch_filing_html_retries_transient_timeout():
+    filing = SimpleNamespace(
+        accession_no="0000320193-25-000079",
+        html=MagicMock(
+            side_effect=[
+                ReadTimeout("SEC read timed out"),
+                ReadTimeout("SEC read timed out"),
+                "<html>filing</html>",
+            ]
+        ),
+    )
+
+    with patch("fin_pipeline.sec_edgar.time.sleep") as sleep:
+        html = _fetch_filing_html(filing)
+
+    assert html == "<html>filing</html>"
+    assert filing.html.call_count == 3
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+
+
+def test_fetch_filing_html_reports_exhausted_retries():
+    filing = SimpleNamespace(
+        accession_no="0000320193-25-000079",
+        html=MagicMock(side_effect=ReadTimeout("SEC read timed out")),
+    )
+
+    with (
+        patch("fin_pipeline.sec_edgar.time.sleep"),
+        pytest.raises(SecEdgarFetchError, match="after 3 attempts"),
+    ):
+        _fetch_filing_html(filing)
+
+    assert filing.html.call_count == 3
 
 
 def test_stream_cli_rejects_reversed_year_range(tmp_path):

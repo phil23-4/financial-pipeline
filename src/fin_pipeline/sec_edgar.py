@@ -4,14 +4,47 @@ from __future__ import annotations
 
 import csv
 import os
-from datetime import date, datetime
+import time
 from collections.abc import Iterator
+from datetime import date, datetime
 from pathlib import Path
 
 from fin_pipeline.config.logger import pipeline_logger as log
 from fin_pipeline.config.settings import EDGAR_IDENTITY
 
 _STRUCTURED_FORMS = {"10-K", "10-Q", "20-F", "40-F", "8-K", "S-1", "S-3", "S-4"}
+_HTML_FETCH_ATTEMPTS = 3
+
+
+class SecEdgarFetchError(RuntimeError):
+    """Raised when a filing cannot be fetched after retrying transient errors."""
+
+
+def _fetch_filing_html(filing) -> str | None:
+    """Fetch filing HTML, retrying transient SEC network failures."""
+    from httpx import NetworkError, TimeoutException
+
+    for attempt in range(1, _HTML_FETCH_ATTEMPTS + 1):
+        try:
+            return filing.html()
+        except (NetworkError, TimeoutException) as exc:
+            if attempt == _HTML_FETCH_ATTEMPTS:
+                accession = getattr(filing, "accession_no", "unknown")
+                raise SecEdgarFetchError(
+                    f"Unable to fetch SEC filing {accession} after "
+                    f"{_HTML_FETCH_ATTEMPTS} attempts: {exc}"
+                ) from exc
+
+            delay = 2 ** (attempt - 1)
+            log.warning(
+                f"SEC filing HTML fetch failed for "
+                f"{getattr(filing, 'accession_no', 'unknown')} "
+                f"(attempt {attempt}/{_HTML_FETCH_ATTEMPTS}): {exc}. "
+                f"Retrying in {delay}s."
+            )
+            time.sleep(delay)
+
+    raise RuntimeError("SEC filing HTML fetch exited without a result")
 
 
 def read_company_csv(csv_path: str) -> Iterator[dict]:
@@ -88,7 +121,7 @@ def _stream_filings_from_csv(
         )
         limit = _max_filings(row)
         for filing in filings[:limit] if limit else filings:
-            html_content = filing.html()
+            html_content = _fetch_filing_html(filing)
             if not html_content:
                 log.warning(f"Skipping {filing.accession_no}: no HTML primary document")
                 continue

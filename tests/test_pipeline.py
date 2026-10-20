@@ -10,9 +10,11 @@ from fin_pipeline.db import relations
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.pipeline import (
     process_mixed_directory,
+    process_sec_edgar_csv_stream,
     run_html_content_pipeline,
     run_ingestion_pipeline,
 )
+from fin_pipeline.sec_edgar import SecEdgarFetchError
 from fin_pipeline.utils.html_parser import (
     extract_filing_metadata,
     extract_text_from_html,
@@ -297,6 +299,17 @@ async def test_html_pipeline_passes_filing_type_to_sections():
 
     assert completed is True
     label_sections.assert_called_once_with(chunks, form_type="20-F")
+
+
+@pytest.mark.asyncio
+async def test_sec_stream_reports_download_failures_without_traceback():
+    with patch(
+        "fin_pipeline.sec_edgar.stream_filings_from_csv",
+        side_effect=SecEdgarFetchError("SEC read timed out after 3 attempts"),
+    ):
+        completed = await process_sec_edgar_csv_stream("companies.csv")
+
+    assert completed is False
 
 
 def test_serialize_json_log_uses_loguru_time_field():
