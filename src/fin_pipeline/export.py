@@ -105,6 +105,8 @@ def export_filings_to_parquet(
     for filing in filings:
         filing_id = filing.get("filingId")
         document_chunks = filing.get("documentChunks") or []
+        if isinstance(document_chunks, str):
+            document_chunks = json.loads(document_chunks)
         if not isinstance(document_chunks, list):
             continue
         for chunk in document_chunks:

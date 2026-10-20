@@ -345,8 +345,7 @@ def _camelot_tables(
     for index, table in enumerate(tables):
         try:
             rows = [
-                [_cell_text(cell) for cell in row]
-                for row in table.df.values.tolist()
+                [_cell_text(cell) for cell in row] for row in table.df.values.tolist()
             ]
             rows = [row for row in rows if any(row)]
             if not rows:
@@ -406,12 +405,9 @@ def _looks_like_table_header(first_row: list[str], body: list[list[str]]) -> boo
     )
     signals = (
         all(cell.strip() for cell in first_row),
-        any(
-            any(term in cell for term in header_terms) for cell in normalized
-        ),
+        any(any(term in cell for term in header_terms) for cell in normalized),
         all(len(cell) < 30 for cell in first_row),
-        modal_body_cell_count is not None
-        and len(first_row) == modal_body_cell_count,
+        modal_body_cell_count is not None and len(first_row) == modal_body_cell_count,
     )
     return sum(signals) >= 2
 
@@ -488,7 +484,7 @@ def _extract_markdown_by_page(
 
 
 def parse_pdf_layout(
-    file_path: str, force_ocr: bool = False, extract_tables: bool = True
+    file_path: str, force_ocr: bool = True, extract_tables: bool = False
 ) -> PdfParseResult:
     """Extract Markdown, tables, and metadata using native PyMuPDF4LLM OCR."""
     warnings: list[str] = []

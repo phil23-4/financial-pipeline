@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -30,9 +31,9 @@ def test_camelot_tables_uses_parsing_report_accuracy():
         exchange="TEST",
         filingType="REPORT",
         source="LOCAL",
-        documentTables=result,
+        documentTables=json.dumps(result),
     ).model_dump()
-    assert record["documentTables"][0]["accuracy"] == 97.5
+    assert json.loads(record["documentTables"])[0]["accuracy"] == 97.5
 
 
 def test_camelot_tables_falls_back_to_stream_and_normalizes_cells():

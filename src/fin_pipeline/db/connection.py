@@ -99,7 +99,13 @@ class _HttpSurrealConnection:
 
     async def upsert(self, record_id: str, payload: dict):
         payload = _prune_none_values(dict(payload))
-        for field_name in ("metadataSources", "metadataConfidence"):
+        for field_name in (
+            "metadataSources",
+            "metadataConfidence",
+            "documentChunks",
+            "documentTables",
+            "xbrlFacts",
+        ):
             if field_name in payload:
                 payload[field_name] = _serialize_metadata_map(payload[field_name])
         if "updatedAt" not in payload or payload["updatedAt"] is None:

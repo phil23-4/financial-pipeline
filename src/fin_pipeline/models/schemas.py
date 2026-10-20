@@ -48,12 +48,12 @@ class ExchangeFilingModel(BaseModel):
     documentHash: str | None = None
     documentText: str | None = None
     documentTextLen: int | None = None
-    documentChunks: list[DocumentChunkSchema] | None = Field(default_factory=list)
-    documentTables: list[DocumentTableSchema] | None = Field(default_factory=list)
+    documentChunks: str | None = None
+    documentTables: str | None = None
     documentTableCnt: int | None = 0
     documentStatus: str | None = "PROCESSED"
     documentStatusReason: str | None = None
-    xbrlFacts: dict[str, float | None] | None = None
+    xbrlFacts: str | None = None
     metadataSources: str | None = None
     metadataConfidence: str | None = None
 

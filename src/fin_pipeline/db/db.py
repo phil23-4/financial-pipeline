@@ -228,18 +228,14 @@ DEFINE FIELD IF NOT EXISTS documentType         ON TABLE exchange_filing TYPE op
 DEFINE FIELD IF NOT EXISTS documentHash         ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS documentText         ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS documentTextLen      ON TABLE exchange_filing TYPE option<int>;
-DEFINE FIELD IF NOT EXISTS documentTables       ON TABLE exchange_filing TYPE option<array<object>>;
-DEFINE FIELD IF NOT EXISTS documentTables[*]             ON TABLE exchange_filing TYPE object;
-DEFINE FIELD IF NOT EXISTS documentTables[*].tableIndex  ON TABLE exchange_filing TYPE option<int>;
-DEFINE FIELD IF NOT EXISTS documentTables[*].sheetName   ON TABLE exchange_filing TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS documentTables[*].pageNumber  ON TABLE exchange_filing TYPE option<int>;
-DEFINE FIELD IF NOT EXISTS documentTables[*].headers     ON TABLE exchange_filing TYPE option<array<string>>;
-DEFINE FIELD IF NOT EXISTS documentTables[*].rowCount    ON TABLE exchange_filing TYPE option<int>;
-DEFINE FIELD IF NOT EXISTS documentTables[*].accuracy    ON TABLE exchange_filing TYPE option<float>;
-DEFINE FIELD IF NOT EXISTS documentTables[*].markdown    ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS documentTables       ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS documentTableCnt     ON TABLE exchange_filing TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS documentStatus       ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS documentStatusReason ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS sourceType            ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS reportingYear         ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS documentChunks        ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS xbrlFacts             ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS metadataSources      ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS metadataConfidence   ON TABLE exchange_filing TYPE option<string>;
 
@@ -364,4 +360,18 @@ def initialize_schema() -> bool:
         log(
             "  Migration: metadata provenance and confidence fields ensured as JSON strings"
         )
+
+    nested_migration = surreal_query(
+        "REMOVE FIELD IF EXISTS documentChunks ON TABLE exchange_filing;"
+        "REMOVE FIELD IF EXISTS documentTables ON TABLE exchange_filing;"
+        "REMOVE FIELD IF EXISTS xbrlFacts ON TABLE exchange_filing;"
+        "DEFINE FIELD documentChunks ON TABLE exchange_filing TYPE option<string>;"
+        "DEFINE FIELD documentTables ON TABLE exchange_filing TYPE option<string>;"
+        "DEFINE FIELD xbrlFacts     ON TABLE exchange_filing TYPE option<string>;",
+        timeout=30,
+    )
+    if isinstance(nested_migration, dict) and nested_migration.get("error"):
+        log(f"  Nested document fields migration warning: {nested_migration['error'][:200]}")
+    else:
+        log("  Migration: nested document fields ensured as JSON strings")
     return True

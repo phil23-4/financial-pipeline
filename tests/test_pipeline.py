@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -5,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from fin_pipeline.config.logger import serialize_json_log
+from fin_pipeline.db import relations
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.pipeline import (
     process_mixed_directory,
@@ -12,7 +14,6 @@ from fin_pipeline.pipeline import (
     run_ingestion_pipeline,
 )
 from fin_pipeline.utils.html_parser import extract_filing_metadata, parse_html_content
-from fin_pipeline.db import relations
 
 
 @pytest.mark.asyncio
@@ -76,10 +77,11 @@ async def test_successful_pipeline_ingestion(
     assert called_id == "exchange_filing:test_filing_123"
     assert called_payload["companyTicker"] == "XYZ"
     assert called_payload["documentStatus"] == "PROCESSED"
-    assert called_payload["documentChunks"][0]["chunkIndex"] == 0
-    assert called_payload["documentChunks"][0]["sectionLabel"] == "business"
+    document_chunks = json.loads(called_payload["documentChunks"])
+    assert document_chunks[0]["chunkIndex"] == 0
+    assert document_chunks[0]["sectionLabel"] == "business"
     assert called_payload["documentTableCnt"] == 1
-    assert called_payload["documentTables"][0]["accuracy"] == 96.5
+    assert json.loads(called_payload["documentTables"])[0]["accuracy"] == 96.5
 
     # Verify graph edge constructor call was dispatched safely
     mock_graph_rel.assert_called_once()
@@ -120,9 +122,8 @@ async def test_ingestion_pipeline_labels_glossy_chunks_with_optional_llm(
     )
 
     assert completed is True
-    assert mock_db.upsert.call_args.args[1]["documentChunks"][0]["sectionLabel"] == (
-        "governance"
-    )
+    document_chunks = json.loads(mock_db.upsert.call_args.args[1]["documentChunks"])
+    assert document_chunks[0]["sectionLabel"] == "governance"
     mock_graph_rel.assert_awaited_once()
 
 
@@ -343,9 +344,10 @@ async def test_html_content_pipeline_ingests_without_file(
     payload = mock_db.upsert.call_args.args[1]
     assert payload["documentType"] == "HTML"
     assert payload["stockName"] == "Apple Inc."
-    assert payload["documentChunks"][0]["pageNumber"] == 1
-    assert payload["documentChunks"][0]["sectionLabel"] == "business"
-    assert payload["xbrlFacts"]["assets"] == 42
+    document_chunks = json.loads(payload["documentChunks"])
+    assert document_chunks[0]["pageNumber"] == 1
+    assert document_chunks[0]["sectionLabel"] == "business"
+    assert json.loads(payload["xbrlFacts"])["assets"] == 42
     mock_graph_rel.assert_awaited_once()
 
 
@@ -415,6 +417,82 @@ def test_http_upsert_uses_upsert_statement():
     assert sql.startswith("UPSERT exchange_filing:⟨test⟩ CONTENT")
     assert "updatedAt: d'2026-09-01T00:00:00Z'" in sql
     assert "sheetName" not in sql
+
+
+def test_http_upsert_serializes_nested_fields():
+    chunks = [{"chunkIndex": 0, "text": "Note:Unless arbitrary content"}]
+    serialized_chunks = json.dumps(chunks, ensure_ascii=False)
+    with (
+        patch("fin_pipeline.db.connection.surreal_query") as mock_surreal_query,
+        patch("fin_pipeline.db.connection.surreal_rpc") as mock_surreal_rpc,
+    ):
+        mock_surreal_query.return_value = {"result": [{"status": "OK"}]}
+
+        async def run():
+            adapter = __import__(
+                "fin_pipeline.db.connection", fromlist=["_HttpSurrealConnection"]
+            )._HttpSurrealConnection()
+            await adapter.upsert(
+                "exchange_filing:chunks",
+                {
+                    "filingId": "chunks",
+                    "updatedAt": "2026-09-01T00:00:00Z",
+                    "documentChunks": chunks,
+                },
+            )
+
+        import asyncio
+
+        asyncio.run(run())
+
+    mock_surreal_rpc.assert_not_called()
+    mock_surreal_query.assert_called_once()
+    sql = mock_surreal_query.call_args.args[0]
+    assert json.dumps(serialized_chunks, ensure_ascii=False) in sql
+
+
+@pytest.mark.asyncio
+@patch("fin_pipeline.pipeline.parse_document")
+@patch("fin_pipeline.pipeline.SurrealConnection")
+@patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
+async def test_pipeline_serializes_chunks_as_json_string(
+    mock_graph_rel, mock_surreal_conn, mock_parse_document, sample_pdf_path
+):
+    chunks = [
+        {
+            "chunkIndex": 0,
+            "pageNumber": 1,
+            "sectionLabel": "business",
+            "text": "Revenue:Growth",
+        }
+    ]
+    mock_parse_document.return_value = {
+        "text": "Revenue:Growth",
+        "chunks": chunks,
+        "tables": [],
+        "table_cnt": 0,
+        "reason": "Digital Native",
+    }
+    mock_db = AsyncMock()
+    mock_surreal_conn.return_value.__aenter__.return_value = mock_db
+
+    completed = await run_ingestion_pipeline(
+        {
+            "filingId": "serialized_chunks",
+            "companyTicker": "XYZ",
+            "stockCode": "9999",
+            "exchange": "LSE",
+            "filingType": "10-K",
+        },
+        sample_pdf_path,
+        source="SEC",
+    )
+
+    payload = mock_db.upsert.call_args.args[1]
+    assert completed is True
+    assert isinstance(payload["documentChunks"], str)
+    assert json.loads(payload["documentChunks"]) == chunks
+    mock_graph_rel.assert_awaited_once()
 
 
 def test_http_upsert_uses_rpc_for_large_documents():

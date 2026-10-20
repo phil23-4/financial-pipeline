@@ -215,6 +215,10 @@ async def run_ingestion_pipeline(
                 }
             )
 
+    for field in ("documentChunks", "documentTables", "xbrlFacts"):
+        if field in payload and payload[field] is not None:
+            payload[field] = json.dumps(payload[field], ensure_ascii=False)
+
     try:
         validated_record = ExchangeFilingModel(**payload).model_dump()
         record_id = f"{FILING_TABLE}:{validated_record['filingId']}"
@@ -339,6 +343,10 @@ async def run_html_content_pipeline(
                 "documentStatusReason": f"Layout Error: {exc}",
             }
         )
+
+    for field in ("documentChunks", "documentTables", "xbrlFacts"):
+        if field in payload and payload[field] is not None:
+            payload[field] = json.dumps(payload[field], ensure_ascii=False)
 
     try:
         validated_record = ExchangeFilingModel(**payload).model_dump()

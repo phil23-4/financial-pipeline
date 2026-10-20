@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from click.testing import CliRunner
 
@@ -17,14 +19,16 @@ def test_export_writes_filing_and_chunk_parquet(tmp_path, monkeypatch):
                     "filingId": "sec_ACME_123",
                     "companyTicker": "ACME",
                     "sourceType": "glossy_report",
-                    "documentChunks": [
-                        {
-                            "chunkIndex": 0,
-                            "pageNumber": 1,
-                            "sectionLabel": "strategy",
-                            "text": "Growth plan",
-                        }
-                    ],
+                    "documentChunks": json.dumps(
+                        [
+                            {
+                                "chunkIndex": 0,
+                                "pageNumber": 1,
+                                "sectionLabel": "strategy",
+                                "text": "Growth plan",
+                            }
+                        ]
+                    ),
                 }
             ],
         }
