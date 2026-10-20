@@ -68,9 +68,14 @@ async def test_successful_pipeline_ingestion(
     }
 
     # 4. Trigger structural function engine node logic
-    await run_ingestion_pipeline(metadata, sample_pdf_path, source="SEC")
+    await run_ingestion_pipeline(
+        metadata, sample_pdf_path, source="SEC", ocr_enabled=False
+    )
 
     # 5. Assertions: Verify database update statement was made correctly
+    mock_pdf_parser.assert_called_once_with(
+        sample_pdf_path, force_ocr=False, use_ocr=False
+    )
     mock_db_instance.upsert.assert_called_once()
     called_id, called_payload = mock_db_instance.upsert.call_args[0]
 

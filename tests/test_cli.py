@@ -29,6 +29,7 @@ def test_file_command_passes_stock_name_to_ingestion(tmp_path):
                 "ANNUAL_REPORT",
                 "--source",
                 "LOCAL",
+                "--no-ocr",
             ],
         )
 
@@ -37,6 +38,7 @@ def test_file_command_passes_stock_name_to_ingestion(tmp_path):
     assert metadata["stockName"] == "Banca Transilvania S.A."
     assert metadata["companyTicker"] == "TLV"
     assert run_pipeline.call_args.kwargs["source"] == "LOCAL"
+    assert run_pipeline.call_args.kwargs["ocr_enabled"] is False
 
 
 def test_file_command_requires_filing_type(tmp_path):
@@ -84,6 +86,7 @@ def test_file_command_supports_dry_run(tmp_path):
     assert result.exit_code == 0
     assert "Dry run completed" in result.output
     assert run_pipeline.call_args.kwargs["dry_run"] is True
+    assert run_pipeline.call_args.kwargs["ocr_enabled"] is True
 
 
 def test_file_command_reports_pipeline_failure(tmp_path):
@@ -111,19 +114,25 @@ def test_file_command_reports_pipeline_failure(tmp_path):
 
 def test_scan_command_passes_dry_run(tmp_path):
     with patch("fin_pipeline.cli.process_entire_directory") as process:
-        result = CliRunner().invoke(main, ["scan", str(tmp_path), "--dry-run"])
+        result = CliRunner().invoke(
+            main, ["scan", str(tmp_path), "--dry-run", "--no-ocr"]
+        )
 
     assert result.exit_code == 0
     assert process.call_args.kwargs["dry_run"] is True
+    assert process.call_args.kwargs["ocr_enabled"] is False
     assert "Dry run completed" in result.output
 
 
 def test_scan_mixed_command_passes_dry_run(tmp_path):
     with patch("fin_pipeline.cli.process_mixed_directory") as process:
-        result = CliRunner().invoke(main, ["scan-mixed", str(tmp_path), "--dry-run"])
+        result = CliRunner().invoke(
+            main, ["scan-mixed", str(tmp_path), "--dry-run", "--no-ocr"]
+        )
 
     assert result.exit_code == 0
     assert process.call_args.kwargs["dry_run"] is True
+    assert process.call_args.kwargs["ocr_enabled"] is False
     assert "Dry run completed" in result.output
 
 

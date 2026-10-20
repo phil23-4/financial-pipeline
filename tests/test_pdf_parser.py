@@ -273,6 +273,72 @@ def test_pdf_parser_passes_force_ocr_and_native_callback():
     assert to_markdown.call_args.args[0] is document
 
 
+def test_pdf_parser_uses_ocr_selectively_by_default():
+    document = SimpleNamespace(metadata={})
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            return_value=[{"text": "Digital report"}],
+        ) as to_markdown,
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables", return_value=[]),
+    ):
+        open_pdf.return_value.__enter__.return_value = document
+        parse_pdf_layout("report.pdf")
+
+    assert to_markdown.call_args.kwargs["force_ocr"] is False
+    assert to_markdown.call_args.kwargs["use_ocr"] == __import__(
+        "fin_pipeline.utils.pdf_parser", fromlist=["OCRMode"]
+    ).OCRMode.SELECT_REMOVING_OLD
+    assert to_markdown.call_args.kwargs["ocr_function"]
+
+
+def test_pdf_parser_disables_automatic_and_forced_ocr():
+    document = SimpleNamespace(metadata={})
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            return_value=[{"text": "Native text"}],
+        ) as to_markdown,
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables", return_value=[]),
+    ):
+        open_pdf.return_value.__enter__.return_value = document
+        result = parse_pdf_layout("report.pdf", force_ocr=False, use_ocr=False)
+
+    assert to_markdown.call_args.kwargs["use_ocr"] == __import__(
+        "fin_pipeline.utils.pdf_parser", fromlist=["OCRMode"]
+    ).OCRMode.NEVER
+    assert to_markdown.call_args.kwargs["force_ocr"] is False
+    assert "ocr_function" not in to_markdown.call_args.kwargs
+    assert result["reason"] == "PyMuPDF4LLM (OCR disabled)"
+
+
+def test_pdf_parser_keeps_ocr_disabled_during_page_fallback():
+    document = SimpleNamespace(metadata={}, page_count=1)
+    parse_error = __import__("pymupdf").mupdf.FzErrorArgument(
+        "incomplete or truncated stream"
+    )
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            side_effect=[parse_error, parse_error, parse_error],
+        ) as to_markdown,
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables", return_value=[]),
+    ):
+        open_pdf.return_value.__enter__.return_value = document
+        parse_pdf_layout("report.pdf", force_ocr=False, use_ocr=False)
+
+    assert all(
+        call.kwargs["use_ocr"]
+        == __import__("fin_pipeline.utils.pdf_parser", fromlist=["OCRMode"]).OCRMode.NEVER
+        and call.kwargs["force_ocr"] is False
+        and "ocr_function" not in call.kwargs
+        for call in to_markdown.call_args_list
+    )
+
+
 def test_pdf_parser_can_skip_expensive_table_extraction():
     document = SimpleNamespace(metadata={})
     with (

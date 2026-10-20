@@ -112,6 +112,9 @@ The command recursively discovers both `.pdf` and `.html` files, routes each
 file to its matching parser, and supports `--concurrency` and `--dry-run` like
 the existing directory commands. The `scan` command remains PDF-only, while
 `sec-edgar-html` remains specialized for SEC Edgar directory layouts.
+PDF OCR is enabled by default for `scan`, `scan-mixed`, and `file`; pass
+`--no-ocr` to disable it, or use `--ocr` to explicitly enable it. In mixed
+directories, this setting affects PDFs only.
 
 ## Metadata extraction behavior
 
@@ -134,7 +137,7 @@ PDF text is extracted with `pymupdf4llm.to_markdown(..., page_chunks=True)` so p
 
 Tables are extracted with Camelot using the lattice flavor first and the stream flavor when lattice extraction is unavailable. Each table includes normalized `headers`, `rowCount`, `pageNumber`, `accuracy`, and Markdown content. Table cells are whitespace-normalized and escaped for safe Markdown rendering.
 
-Use `parse_pdf_layout(path, force_ocr=True)` to bypass an unreliable native text layer and force OCR. PDF metadata is read from the same `pymupdf.Document` used for Markdown extraction, avoiding duplicate PDF I/O.
+By default, `parse_pdf_layout(path)` lets PyMuPDF4LLM use OCR selectively when it determines a page needs it, without forcing OCR on pages that already have usable text. Pass `force_ocr=True` to OCR every page, including pages with a native text layer. The CLI's `--no-ocr` option disables OCR and uses native text extraction only. PDF metadata is read from the same `pymupdf.Document` used for Markdown extraction, avoiding duplicate PDF I/O.
 
 ### PDF metadata
 
@@ -335,10 +338,11 @@ fin-pipeline file ./downloads/apple_10k.pdf \
   --stock-code "320193" \
   --exchange "NASDAQ" \
   --type "10-K" \
-  --source SEC
+  --source SEC \
+  --no-ocr
 ```
 
-When the legal company name is known from the filing source, pass it with `--stock-name`. This value is treated as authoritative; PDF extraction is used only when the field is omitted.
+OCR is enabled by default. Use `--no-ocr` to skip OCR when processing PDFs, or `--ocr` to explicitly turn it on. When the legal company name is known from the filing source, pass it with `--stock-name`. This value is treated as authoritative; PDF extraction is used only when the field is omitted.
 
 ### 6. Ingest a single HTML filing with metadata
 

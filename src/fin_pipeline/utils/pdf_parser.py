@@ -448,6 +448,7 @@ def _exec_ocr_without_tiny_image_noise(*args: Any, **kwargs: Any) -> Any:
 def _extract_markdown_by_page(
     doc: pymupdf.Document,
     force_ocr: bool,
+    use_ocr: bool,
     warnings: list[str],
 ) -> tuple[list[Any], str]:
     """Extract healthy pages individually when document-level parsing fails."""
@@ -458,9 +459,15 @@ def _extract_markdown_by_page(
                 doc,
                 pages=[page_number],
                 page_chunks=True,
-                use_ocr=OCRMode.SELECT_REMOVING_OLD,
+                use_ocr=(
+                    OCRMode.SELECT_REMOVING_OLD if use_ocr else OCRMode.NEVER
+                ),
                 force_ocr=force_ocr,
-                ocr_function=_exec_ocr_without_tiny_image_noise,
+                **(
+                    {"ocr_function": _exec_ocr_without_tiny_image_noise}
+                    if use_ocr
+                    else {}
+                ),
             )
             if isinstance(page_chunks, str):
                 chunks.append(
@@ -484,21 +491,33 @@ def _extract_markdown_by_page(
 
 
 def parse_pdf_layout(
-    file_path: str, force_ocr: bool = True, extract_tables: bool = False
+    file_path: str,
+    force_ocr: bool = False,
+    extract_tables: bool = False,
+    use_ocr: bool = True,
 ) -> PdfParseResult:
-    """Extract Markdown, tables, and metadata using native PyMuPDF4LLM OCR."""
+    """Extract Markdown, tables, and metadata, optionally using native OCR."""
     warnings: list[str] = []
+    force_ocr = force_ocr and use_ocr
     extraction_reason = (
-        "PyMuPDF4LLM + native hybrid OCR" if force_ocr else "PyMuPDF4LLM"
+        "PyMuPDF4LLM + native hybrid OCR"
+        if use_ocr
+        else "PyMuPDF4LLM (OCR disabled)"
     )
     with pymupdf.open(file_path) as doc:
         try:
             page_chunks = pymupdf4llm.to_markdown(
                 doc,
                 page_chunks=True,
-                use_ocr=OCRMode.SELECT_REMOVING_OLD,
+                use_ocr=(
+                    OCRMode.SELECT_REMOVING_OLD if use_ocr else OCRMode.NEVER
+                ),
                 force_ocr=force_ocr,
-                ocr_function=_exec_ocr_without_tiny_image_noise,
+                **(
+                    {"ocr_function": _exec_ocr_without_tiny_image_noise}
+                    if use_ocr
+                    else {}
+                ),
             )
         except (
             pymupdf.mupdf.FzErrorBase,
@@ -508,7 +527,8 @@ def parse_pdf_layout(
             ValueError,
             zlib.error,
         ) as exc:
-            warnings.append(f"PyMuPDF4LLM OCR extraction failed: {exc}")
+            extraction_type = "OCR" if use_ocr else "text"
+            warnings.append(f"PyMuPDF4LLM {extraction_type} extraction failed: {exc}")
             try:
                 page_chunks = pymupdf4llm.to_markdown(
                     doc,
@@ -516,7 +536,11 @@ def parse_pdf_layout(
                     use_ocr=OCRMode.NEVER,
                     force_ocr=False,
                 )
-                extraction_reason = "PyMuPDF4LLM (OCR fallback)"
+                extraction_reason = (
+                    "PyMuPDF4LLM (OCR fallback)"
+                    if use_ocr
+                    else "PyMuPDF4LLM (native text fallback)"
+                )
             except (
                 pymupdf.mupdf.FzErrorBase,
                 OSError,
@@ -529,7 +553,7 @@ def parse_pdf_layout(
                     f"PyMuPDF4LLM native text fallback failed: {fallback_exc}"
                 )
                 page_chunks, extraction_reason = _extract_markdown_by_page(
-                    doc, force_ocr=False, warnings=warnings
+                    doc, force_ocr=False, use_ocr=use_ocr, warnings=warnings
                 )
 
         if isinstance(page_chunks, str):
@@ -565,6 +589,8 @@ def parse_pdf_layout(
         warnings.append("No usable text was extracted from the PDF")
         if extraction_reason == "PyMuPDF4LLM (OCR fallback)":
             extraction_reason = "PyMuPDF4LLM (OCR fallback; no native text)"
+        elif extraction_reason == "PyMuPDF4LLM (native text fallback)":
+            extraction_reason = "PyMuPDF4LLM (native text fallback; no text)"
 
     result: PdfParseResult = {
         "text": text,

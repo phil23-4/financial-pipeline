@@ -33,13 +33,20 @@ def main():
 @click.option(
     "--concurrency", "-c", default=3, type=int, help="Max simultaneous OCR processes"
 )
+@click.option(
+    "--ocr/--no-ocr", default=True, show_default=True, help="Enable or disable PDF OCR."
+)
 @click.option("--dry-run", is_flag=True, help="Parse and validate without database writes.")
-def scan(dir_path: str, source: str, concurrency: int, dry_run: bool):
+def scan(dir_path: str, source: str, concurrency: int, ocr: bool, dry_run: bool):
     """Recursively scan a local folder for PDFs and pipe them to SurrealDB."""
     click.echo(f"📂 Scanning target directory: {dir_path}")
     asyncio.run(
         process_entire_directory(
-            dir_path, source_type=source, concurrency_limit=concurrency, dry_run=dry_run
+            dir_path,
+            source_type=source,
+            concurrency_limit=concurrency,
+            dry_run=dry_run,
+            ocr_enabled=ocr,
         )
     )
     click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Directory processing task successfully closed out.")
@@ -59,13 +66,22 @@ def scan(dir_path: str, source: str, concurrency: int, dry_run: bool):
 @click.option(
     "--concurrency", "-c", default=3, type=int, help="Max simultaneous parsing processes"
 )
+@click.option(
+    "--ocr/--no-ocr", default=True, show_default=True, help="Enable or disable PDF OCR."
+)
 @click.option("--dry-run", is_flag=True, help="Parse and validate without database writes.")
-def scan_mixed(dir_path: str, source: str, concurrency: int, dry_run: bool):
+def scan_mixed(
+    dir_path: str, source: str, concurrency: int, ocr: bool, dry_run: bool
+):
     """Recursively scan a local folder for both PDFs and HTML files."""
     click.echo(f"📂 Scanning mixed document directory: {dir_path}")
     asyncio.run(
         process_mixed_directory(
-            dir_path, source_type=source, concurrency_limit=concurrency, dry_run=dry_run
+            dir_path,
+            source_type=source,
+            concurrency_limit=concurrency,
+            dry_run=dry_run,
+            ocr_enabled=ocr,
         )
     )
     click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Mixed directory processing task successfully closed out.")
@@ -171,6 +187,9 @@ def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None, d
 )
 @click.option("--source", default="SEC", type=click.Choice(["SEC", "LOCAL"]))
 @click.option(
+    "--ocr/--no-ocr", default=True, show_default=True, help="Enable or disable PDF OCR."
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Parse and validate the file without writing to SurrealDB.",
@@ -184,6 +203,7 @@ def file(
     exchange: str,
     filing_type: str,
     source: str,
+    ocr: bool,
     dry_run: bool,
 ):
     """Ingest a single explicit file (PDF or HTML) with provided structured metadata."""
@@ -198,7 +218,7 @@ def file(
     click.echo(f"📥 Processing individual file: {os.path.basename(file_path)}")
     completed = asyncio.run(
         run_ingestion_pipeline(
-            metadata, file_path, source=source, dry_run=dry_run
+            metadata, file_path, source=source, dry_run=dry_run, ocr_enabled=ocr
         )
     )
     if not completed:

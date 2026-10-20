@@ -65,7 +65,7 @@ def detect_file_type(file_path: str) -> str:
         return FILE_TYPE_UNKNOWN
 
 
-def parse_document(file_path: str) -> dict:
+def parse_document(file_path: str, ocr_enabled: bool = True) -> dict:
     """Parse document content and extract text and tables based on file type.
 
     Supports PDF and HTML files. Automatically detects format and applies
@@ -84,7 +84,9 @@ def parse_document(file_path: str) -> dict:
     file_type = detect_file_type(file_path)
 
     if file_type == FILE_TYPE_PDF:
-        return parse_pdf_layout(file_path)
+        return parse_pdf_layout(
+            file_path, force_ocr=False, use_ocr=ocr_enabled
+        )
     elif file_type == FILE_TYPE_HTML:
         return parse_html_file(file_path)
     else:
@@ -102,6 +104,7 @@ async def run_ingestion_pipeline(
     source: str,
     dry_run: bool = False,
     llm_callable: Callable[[str], str] | None = None,
+    ocr_enabled: bool = True,
 ) -> bool:
     """Execute complete document ingestion pipeline with extraction, validation, and database commit.
 
@@ -145,7 +148,7 @@ async def run_ingestion_pipeline(
             log.debug(
                 f"🔍 Executing layout parser vector maps for target: {os.path.basename(file_path)}"
             )
-            parsed = parse_document(file_path)
+            parsed = parse_document(file_path, ocr_enabled=ocr_enabled)
             if payload.get("sourceType") == "structured_filing":
                 parsed["chunks"] = label_sections_structured(
                     parsed.get("chunks", [])
@@ -383,6 +386,7 @@ async def process_entire_directory(
     source_type: str = "LOCAL",
     concurrency_limit: int = 3,
     dry_run: bool = False,
+    ocr_enabled: bool = True,
 ):
     """Recursively scan and ingest all documents from directory with concurrent processing.
 
@@ -406,7 +410,11 @@ async def process_entire_directory(
         async with semaphore:
             try:
                 await run_ingestion_pipeline(
-                    meta, file_path, source=source_type, dry_run=dry_run
+                    meta,
+                    file_path,
+                    source=source_type,
+                    dry_run=dry_run,
+                    ocr_enabled=ocr_enabled,
                 )
             except (OSError, RuntimeError, ValueError) as e:
                 error_msg = f"Worker execution failed for {file_path}: {e}"
@@ -435,6 +443,7 @@ async def process_mixed_directory(
     concurrency_limit: int = 3,
     dry_run: bool = False,
     llm_callable: Callable[[str], str] | None = None,
+    ocr_enabled: bool = True,
 ):
     """Recursively ingest both PDF and HTML files from a local directory."""
     if not os.path.isdir(dir_path):
@@ -455,6 +464,7 @@ async def process_mixed_directory(
                     source=source_type,
                     dry_run=dry_run,
                     llm_callable=llm_callable,
+                    ocr_enabled=ocr_enabled,
                 )
                 if not completed:
                     errors.append(f"Document processing failed for {file_path}")
