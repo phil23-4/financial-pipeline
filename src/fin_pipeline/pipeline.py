@@ -150,8 +150,11 @@ async def run_ingestion_pipeline(
             )
             parsed = parse_document(file_path, ocr_enabled=ocr_enabled)
             if payload.get("sourceType") == "structured_filing":
+                form_type = payload.get("filingType") or metadata_input.get(
+                    "filingType"
+                )
                 parsed["chunks"] = label_sections_structured(
-                    parsed.get("chunks", [])
+                    parsed.get("chunks", []), form_type=form_type
                 )
             elif payload.get("sourceType") == "glossy_report" and llm_callable:
                 parsed["chunks"] = label_sections_glossy(
@@ -294,7 +297,10 @@ async def run_html_content_pipeline(
     try:
         parsed = parse_html_content(html_content)
         if payload.get("sourceType") == "structured_filing":
-            parsed["chunks"] = label_sections_structured(parsed.get("chunks", []))
+            form_type = payload.get("filingType") or metadata_input.get("filingType")
+            parsed["chunks"] = label_sections_structured(
+                parsed.get("chunks", []), form_type=form_type
+            )
         elif payload.get("sourceType") == "glossy_report" and llm_callable:
             parsed["chunks"] = label_sections_glossy(
                 parsed.get("chunks", []), llm_callable

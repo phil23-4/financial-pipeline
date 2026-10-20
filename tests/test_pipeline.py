@@ -261,6 +261,44 @@ async def test_html_pipeline_dry_run_does_not_open_database(mock_surreal_conn):
     mock_surreal_conn.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_html_pipeline_passes_filing_type_to_sections():
+    chunks = [{"chunkIndex": 0, "pageNumber": 1, "text": "Item 3.D Risk Factors"}]
+    parsed_html = {
+        "text": "Item 3.D Risk Factors",
+        "chunks": chunks,
+        "tables": [],
+        "table_cnt": 0,
+        "reason": "html_beautifulsoup",
+    }
+    metadata = {
+        "filingId": "sec_foreign_filing",
+        "companyTicker": "XYZ",
+        "stockCode": "UNKNOWN",
+        "exchange": "UNKNOWN",
+        "filingType": "20-F",
+        "sourceType": "structured_filing",
+    }
+
+    with (
+        patch("fin_pipeline.pipeline.parse_html_content", return_value=parsed_html),
+        patch(
+            "fin_pipeline.pipeline.enrich_filing_metadata_with_edgartools",
+            side_effect=lambda parsed, _accession: parsed,
+        ),
+        patch(
+            "fin_pipeline.pipeline.label_sections_structured",
+            return_value=chunks,
+        ) as label_sections,
+    ):
+        completed = await run_html_content_pipeline(
+            metadata, "<p>Item 3.D Risk Factors</p>", dry_run=True
+        )
+
+    assert completed is True
+    label_sections.assert_called_once_with(chunks, form_type="20-F")
+
+
 def test_serialize_json_log_uses_loguru_time_field():
     """Ensure JSON log serialization is compatible with Loguru's current record layout."""
     record = {

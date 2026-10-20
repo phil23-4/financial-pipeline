@@ -34,6 +34,89 @@ _STRUCTURED_ITEM_LABELS = {
     14: "corporate_governance",
 }
 
+_20F_HEADER_PATTERNS = [
+    (
+        re.compile(
+            r"\b(?:ITEM\s*)?3\s*(?:\.\s*)?D\b"
+            r"(?:(?!\bITEM\s*\d).){0,200}?\bRISK\s+FACTORS\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "risk_factors",
+    ),
+    (
+        re.compile(
+            r"\bITEM\s*3\.?\s*[A-D]?\s*"
+            r"(?:(?!\bITEM\s*\d).){0,200}?"
+            r"\b(?:KEY\s+INFORMATION|RISK\s+FACTORS)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "risk_factors",
+    ),
+    (
+        re.compile(
+            r"\bITEM\s*4\.?\s*"
+            r"(?:(?!\bITEM\s*\d).){0,200}?"
+            r"\b(?:INFORMATION\s+ON\s+THE\s+COMPANY|BUSINESS\s+OVERVIEW)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "business",
+    ),
+    (
+        re.compile(
+            r"\bITEM\s*5\.?\s*"
+            r"(?:(?!\bITEM\s*\d).){0,200}?"
+            r"\b(?:OPERATING\s+AND\s+FINANCIAL\s+REVIEW|OPERATING\s+RESULTS)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "mdna",
+    ),
+    (
+        re.compile(
+            r"\bITEM\s*6\.?\s*"
+            r"(?:(?!\bITEM\s*\d).){0,200}?"
+            r"\b(?:DIRECTORS|SENIOR\s+MANAGEMENT|EMPLOYEES)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "corporate_governance",
+    ),
+    (
+        re.compile(
+            r"\bITEM\s*8\.?\s*"
+            r"(?:(?!\bITEM\s*\d).){0,200}?"
+            r"\b(?:FINANCIAL\s+INFORMATION|CONSOLIDATED\s+STATEMENTS)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "financial_statements",
+    ),
+    (
+        re.compile(
+            r"\bITEM\s*15\.?\s*"
+            r"(?:(?!\bITEM\s*\d).){0,200}?\bCONTROLS\s+AND\s+PROCEDURES\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        "corporate_governance",
+    ),
+]
+
+_40F_HEADER_PATTERNS = [
+    (re.compile(r"\bANNUAL\s+INFORMATION\s+FORM\b", re.IGNORECASE), "business"),
+    (
+        re.compile(
+            r"\b(?:MANAGEMENT'?S\s+DISCUSSION\s+AND\s+ANALYSIS|MD&A)\b",
+            re.IGNORECASE,
+        ),
+        "mdna",
+    ),
+    (
+        re.compile(
+            r"\b(?:AUDITED\s+)?(?:CONSOLIDATED\s+)?FINANCIAL\s+STATEMENTS\b",
+            re.IGNORECASE,
+        ),
+        "financial_statements",
+    ),
+    (re.compile(r"\bRISK\s+FACTORS\b", re.IGNORECASE), "risk_factors"),
+]
+
 _GLOSSY_LABELS = {
     "ceo_letter",
     "strategy",
@@ -46,25 +129,84 @@ _GLOSSY_LABELS = {
 }
 
 
-def label_sections_structured(chunks: list[dict]) -> list[dict]:
-    """Label each chunk from its most recent PART or ITEM heading."""
+def _structured_form_type(chunks: list[dict], form_type: str | None) -> str:
+    if form_type is not None:
+        normalized_form_type = re.sub(r"\s+", "", form_type.upper())
+        if normalized_form_type in {"20-F", "40-F"}:
+            return normalized_form_type
+        return "10-K"
+
+    text = "\n".join(
+        chunk.get("text", "")
+        for chunk in chunks
+        if isinstance(chunk.get("text", ""), str)
+    )[:5000]
+    if re.search(r"\bFORM\s*20-F\b", text, re.IGNORECASE) or (
+        re.search(
+            r"\bANNUAL\s+REPORT\s+PURSUANT\s+TO\s+SECTION\s+13\b",
+            text,
+            re.IGNORECASE,
+        )
+        and re.search(r"\b20-F\b", text, re.IGNORECASE)
+    ):
+        return "20-F"
+    if re.search(r"\bFORM\s*40-F\b", text, re.IGNORECASE):
+        return "40-F"
+    return "10-K"
+
+
+def _apply_heading_patterns(
+    text: str,
+    current_label: str | None,
+    patterns: list[tuple[re.Pattern[str], str]],
+) -> str | None:
+    matches_by_start: dict[int, tuple[int, str]] = {}
+    for priority, (pattern, label) in enumerate(patterns):
+        for match in pattern.finditer(text):
+            existing = matches_by_start.get(match.start())
+            if existing is None or priority < existing[0]:
+                matches_by_start[match.start()] = (priority, label)
+
+    for start in sorted(matches_by_start):
+        _, label = matches_by_start[start]
+        current_label = label
+    return current_label
+
+
+def label_sections_structured(
+    chunks: list[dict],
+    form_type: str | None = None,
+) -> list[dict]:
+    """Label chunks from the filing's structured section headings."""
+    selected_form = _structured_form_type(chunks, form_type)
     labeled_chunks: list[dict] = []
     current_label: str | None = None
     for chunk in chunks:
         text = chunk.get("text", "")
         if isinstance(text, str):
-            for match in _STRUCTURED_HEADER.finditer(text):
-                part = match.group("part")
-                if part:
-                    current_label = _STRUCTURED_PART_LABELS[part.upper()]
-                else:
-                    item = int(match.group("item"))
-                    item_suffix = match.group("item_suffix")
-                    current_label = (
-                        "risk_factors"
-                        if item == 1 and item_suffix and item_suffix.upper() == "A"
-                        else _STRUCTURED_ITEM_LABELS.get(item, "other")
-                    )
+            if selected_form == "20-F":
+                current_label = _apply_heading_patterns(
+                    text, current_label, _20F_HEADER_PATTERNS
+                )
+            elif selected_form == "40-F":
+                current_label = _apply_heading_patterns(
+                    text, current_label, _40F_HEADER_PATTERNS
+                )
+            else:
+                for match in _STRUCTURED_HEADER.finditer(text):
+                    part = match.group("part")
+                    if part:
+                        current_label = _STRUCTURED_PART_LABELS[part.upper()]
+                    else:
+                        item = int(match.group("item"))
+                        item_suffix = match.group("item_suffix")
+                        current_label = (
+                            "risk_factors"
+                            if item == 1
+                            and item_suffix
+                            and item_suffix.upper() == "A"
+                            else _STRUCTURED_ITEM_LABELS.get(item, "other")
+                        )
         labeled_chunks.append({**chunk, "sectionLabel": current_label})
     return labeled_chunks
 
