@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from fin_pipeline.config.logger import serialize_json_log
+from fin_pipeline.db import connection as connection_module
 from fin_pipeline.db import relations
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.pipeline import (
@@ -467,19 +468,23 @@ def test_extract_filing_metadata_accepts_sec_date_spacing(date_text):
 
 @pytest.mark.asyncio
 @patch("fin_pipeline.db.connection._HttpSurrealConnection")
-async def test_surreal_connection_uses_helper_adapter(mock_http_conn):
+async def test_surreal_connection_initializes_schema_once(mock_http_conn, monkeypatch):
     """The app should use the repository's helper-backed connection adapter."""
     mock_db = AsyncMock()
     mock_http_conn.return_value = mock_db
+    monkeypatch.setattr(connection_module, "_schema_initialized", False)
 
     with patch("fin_pipeline.db.connection.initialize_schema") as mock_schema:
         async with SurrealConnection() as db:
             assert db is mock_db
+        async with SurrealConnection() as db:
+            assert db is mock_db
 
-    mock_http_conn.assert_called_once()
+    assert mock_http_conn.call_count == 2
     mock_schema.assert_called_once()
-    mock_db.connect.assert_awaited_once()
-    mock_db.signin.assert_awaited_once_with(
+    assert mock_db.connect.await_count == 2
+    assert mock_db.signin.await_count == 2
+    mock_db.signin.assert_awaited_with(
         {
             "user": "root",
             "pass": "secret",
@@ -487,8 +492,11 @@ async def test_surreal_connection_uses_helper_adapter(mock_http_conn):
             "database": "analytics",
         }
     )
-    mock_db.use.assert_awaited_once_with(namespace="finance", database="analytics")
-    mock_db.close.assert_awaited_once()
+    assert mock_db.use.await_count == 2
+    mock_db.use.assert_awaited_with(
+        namespace="finance", database="analytics"
+    )
+    assert mock_db.close.await_count == 2
 
 
 def test_http_upsert_uses_upsert_statement():

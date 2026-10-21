@@ -75,6 +75,33 @@ def test_stream_filters_override_csv_filters(tmp_path, monkeypatch):
     assert results[0][1]["reportingYear"] == 2025
 
 
+def test_stream_retries_timeout_while_loading_filings(tmp_path, monkeypatch):
+    csv_path = tmp_path / "companies.csv"
+    csv_path.write_text("ticker\nAAPL\n")
+    company = MagicMock()
+    company.get_ticker.return_value = "AAPL"
+    company.get_filings.side_effect = [
+        ReadTimeout("SEC submissions timed out"),
+        ReadTimeout("SEC submissions timed out"),
+        [],
+    ]
+    fake_edgar = SimpleNamespace(
+        Company=MagicMock(return_value=company),
+        set_identity=MagicMock(),
+    )
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
+
+    with (
+        patch.dict("sys.modules", {"edgar": fake_edgar}),
+        patch("fin_pipeline.sec_edgar.time.sleep") as sleep,
+    ):
+        results = list(stream_filings_from_csv(str(csv_path), forms=["20-F", "40-F"]))
+
+    assert results == []
+    assert company.get_filings.call_count == 3
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+
+
 def test_fetch_filing_html_retries_transient_timeout():
     filing = SimpleNamespace(
         accession_no="0000320193-25-000079",

@@ -8,6 +8,7 @@ from fin_pipeline.utils.db_utils import quote_record_id
 
 # SurrealDB's /sql endpoint has a smaller request limit than /rpc.
 _SQL_UPSERT_LIMIT_BYTES = 900_000
+_schema_initialized = False
 
 
 def _raise_for_query_error(response):
@@ -138,18 +139,23 @@ class _HttpSurrealConnection:
 class SurrealConnection:
     """Async Context Manager context wrapper that uses the project's HTTP DB helper."""
 
-    def __init__(self):
+    def __init__(self, init_schema: bool = True):
         self.db = None
+        self.init_schema = init_schema
 
     async def __aenter__(self):
+        global _schema_initialized
+
         self.db = _HttpSurrealConnection()
         await self.db.connect()
         await self.db.signin(DB_AUTH)
         await self.db.use(namespace=DB_AUTH["namespace"], database=DB_AUTH["database"])
-        if not initialize_schema():
-            await self.db.close()
-            self.db = None
-            raise RuntimeError("SurrealDB schema initialization failed")
+        if self.init_schema and not _schema_initialized:
+            if not initialize_schema():
+                await self.db.close()
+                self.db = None
+                raise RuntimeError("SurrealDB schema initialization failed")
+            _schema_initialized = True
         return self.db
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

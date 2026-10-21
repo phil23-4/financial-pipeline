@@ -5,46 +5,58 @@ from __future__ import annotations
 import csv
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import date, datetime
 from pathlib import Path
+from typing import TypeVar
 
 from fin_pipeline.config.logger import pipeline_logger as log
 from fin_pipeline.config.settings import EDGAR_IDENTITY
 
 _STRUCTURED_FORMS = {"10-K", "10-Q", "20-F", "40-F", "8-K", "S-1", "S-3", "S-4"}
 _HTML_FETCH_ATTEMPTS = 3
+_Result = TypeVar("_Result")
 
 
 class SecEdgarFetchError(RuntimeError):
     """Raised when a filing cannot be fetched after retrying transient errors."""
 
 
-def _fetch_filing_html(filing) -> str | None:
-    """Fetch filing HTML, retrying transient SEC network failures."""
+def _retry_sec_request(
+    operation: Callable[[], _Result],
+    description: str,
+) -> _Result:
+    """Retry transient SEC network failures and report exhausted requests."""
     from httpx import NetworkError, TimeoutException
 
     for attempt in range(1, _HTML_FETCH_ATTEMPTS + 1):
         try:
-            return filing.html()
+            return operation()
         except (NetworkError, TimeoutException) as exc:
             if attempt == _HTML_FETCH_ATTEMPTS:
-                accession = getattr(filing, "accession_no", "unknown")
                 raise SecEdgarFetchError(
-                    f"Unable to fetch SEC filing {accession} after "
+                    f"Unable to complete {description} after "
                     f"{_HTML_FETCH_ATTEMPTS} attempts: {exc}"
                 ) from exc
 
             delay = 2 ** (attempt - 1)
             log.warning(
-                f"SEC filing HTML fetch failed for "
-                f"{getattr(filing, 'accession_no', 'unknown')} "
+                f"SEC request failed for {description} "
                 f"(attempt {attempt}/{_HTML_FETCH_ATTEMPTS}): {exc}. "
                 f"Retrying in {delay}s."
             )
             time.sleep(delay)
 
-    raise RuntimeError("SEC filing HTML fetch exited without a result")
+    raise RuntimeError("SEC request exited without a result")
+
+
+def _fetch_filing_html(filing) -> str | None:
+    """Fetch filing HTML, retrying transient SEC network failures."""
+    accession = getattr(filing, "accession_no", "unknown")
+    return _retry_sec_request(
+        filing.html,
+        f"HTML fetch for filing {accession}",
+    )
 
 
 def read_company_csv(csv_path: str) -> Iterator[dict]:
@@ -103,21 +115,30 @@ def _stream_filings_from_csv(
     set_identity(os.getenv("EDGAR_IDENTITY") or EDGAR_IDENTITY)
     for row in read_company_csv(csv_path):
         identifier = row.get("cik") or row.get("ticker")
-        company = Company(identifier)
+        company = _retry_sec_request(
+            lambda identifier=identifier: Company(identifier),
+            f"company lookup for {identifier}",
+        )
         ticker = (
             row.get("ticker")
-            or company.get_ticker()
+            or _retry_sec_request(
+                company.get_ticker,
+                f"ticker lookup for {identifier}",
+            )
             or f"CIK{str(company.cik).zfill(10)}"
         )
         requested_forms = forms if forms is not None else _forms(row)
         requested_years = (
             list(range(year_range[0], year_range[1] + 1)) if year_range else _year(row)
         )
-        filings = company.get_filings(
-            form=requested_forms,
-            year=requested_years,
-            amendments=False,
-            trigger_full_load=True,
+        filings = _retry_sec_request(
+            lambda company=company, requested_forms=requested_forms, requested_years=requested_years: company.get_filings(
+                form=requested_forms,
+                year=requested_years,
+                amendments=False,
+                trigger_full_load=True,
+            ),
+            f"filings lookup for {identifier}",
         )
         limit = _max_filings(row)
         for filing in filings[:limit] if limit else filings:
