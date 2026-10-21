@@ -323,6 +323,8 @@ async def run_html_content_pipeline(
                 "xbrlFacts": extract_xbrl_facts(html_content),
             }
         )
+        if metadata_input.get("exhibitSectionMap"):
+            payload["exhibitSectionMap"] = metadata_input["exhibitSectionMap"]
         metadata_sources = parsed.get("metadataSources")
         if metadata_sources:
             payload["metadataSources"] = metadata_sources

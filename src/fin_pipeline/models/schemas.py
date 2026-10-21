@@ -56,6 +56,7 @@ class ExchangeFilingModel(BaseModel):
     xbrlFacts: str | None = None
     metadataSources: str | None = None
     metadataConfidence: str | None = None
+    exhibitSectionMap: str | None = None
 
     @field_validator("filingDate", mode="before")
     @classmethod

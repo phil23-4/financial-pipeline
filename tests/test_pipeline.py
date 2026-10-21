@@ -454,6 +454,47 @@ async def test_html_content_pipeline_ingests_without_file(
     mock_graph_rel.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+@patch("fin_pipeline.pipeline.SurrealConnection")
+@patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
+async def test_40f_exhibit_section_map_persists(mock_graph_rel, mock_surreal_conn):
+    mock_db = AsyncMock()
+    mock_surreal_conn.return_value.__aenter__.return_value = mock_db
+    exhibit_section_map = '{"EX-99.1": "business"}'
+    parsed_html = {
+        "text": "Annual Information Form",
+        "chunks": [{"chunkIndex": 0, "pageNumber": 1, "text": "Annual Information Form"}],
+        "tables": [],
+        "table_cnt": 0,
+        "reason": "html_beautifulsoup",
+    }
+
+    with (
+        patch("fin_pipeline.pipeline.parse_html_content", return_value=parsed_html),
+        patch(
+            "fin_pipeline.pipeline.enrich_filing_metadata_with_edgartools",
+            side_effect=lambda parsed, _accession: parsed,
+        ),
+    ):
+        completed = await run_html_content_pipeline(
+            {
+                "filingId": "sec_test_0001-24-000001",
+                "companyTicker": "TEST",
+                "stockCode": "UNKNOWN",
+                "exchange": "UNKNOWN",
+                "filingType": "40-F",
+                "sourceType": "structured_filing",
+                "exhibitSectionMap": exhibit_section_map,
+            },
+            "<html><body>Annual Information Form</body></html>",
+        )
+
+    assert completed is True
+    payload = mock_db.upsert.call_args.args[1]
+    assert payload["exhibitSectionMap"] == exhibit_section_map
+    mock_graph_rel.assert_awaited_once()
+
+
 @pytest.mark.parametrize(
     "date_text",
     ["December 31, 2019", "December 31 , 2019", "December\u00a031,\u00a02019"],

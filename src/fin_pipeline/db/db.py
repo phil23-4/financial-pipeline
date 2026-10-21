@@ -238,6 +238,7 @@ DEFINE FIELD IF NOT EXISTS documentChunks        ON TABLE exchange_filing TYPE o
 DEFINE FIELD IF NOT EXISTS xbrlFacts             ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS metadataSources      ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS metadataConfidence   ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS exhibitSectionMap   ON TABLE exchange_filing TYPE option<string>;
 
 -- Indexes
 DEFINE INDEX IF NOT EXISTS idx_ef_ticker    ON TABLE exchange_filing COLUMNS companyTicker;

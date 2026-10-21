@@ -81,6 +81,124 @@ def test_40f_labels_from_canadian_sections():
     assert labeled[2]["sectionLabel"] == "financial_statements"
 
 
+def test_40f_first_match_wins_over_toc():
+    chunks = [
+        {
+            "text": (
+                "ANNUAL INFORMATION FORM\n"
+                "FOR THE YEAR ENDED DECEMBER 31, 2024\n"
+                "TABLE OF CONTENTS\n"
+                "Business Overview ........ 5\n"
+                "Risk Factors ............ 12\n"
+                "Financial Statements .... 47\n"
+                "Item 5 ...\n"
+            )
+        }
+    ]
+
+    labeled = label_sections_structured(chunks, form_type="40-F")
+
+    assert labeled[0]["sectionLabel"] == "business"
+
+
+def test_40f_chunk_starting_with_marker_wins():
+    chunks = [
+        {
+            "text": (
+                "Annual Information Form\n"
+                "Exhibit 99.1\n"
+                "TABLE OF CONTENTS\n"
+                "Financial Statements .... 47\n"
+            )
+        }
+    ]
+
+    labeled = label_sections_structured(chunks, form_type="40-F")
+
+    assert labeled[0]["sectionLabel"] == "business"
+
+
+def test_40f_suppresses_toc_headings_without_marker():
+    chunks = [
+        {"text": "Annual Information Form"},
+        {
+            "text": (
+                "TABLE OF CONTENTS\n"
+                "Financial Statements\n"
+                "Risk Factors\n"
+            )
+        },
+    ]
+
+    labeled = label_sections_structured(chunks, form_type="40-F")
+
+    assert [chunk["sectionLabel"] for chunk in labeled] == ["business", "business"]
+
+
+def test_40f_carries_forward_without_headings():
+    chunks = [
+        {"text": "Annual Information Form"},
+        {"text": "This chunk contains body text and no section heading."},
+    ]
+
+    labeled = label_sections_structured(chunks, form_type="40-F")
+
+    assert [chunk["sectionLabel"] for chunk in labeled] == ["business", "business"]
+
+
+def test_40f_marker_state_machine_carries_forward():
+    chunks = [
+        {"text": "Annual Information Form\nCompany overview..."},
+        {"text": "Our business is..."},
+        {"text": "Management's Discussion and Analysis\nRevenue..."},
+        {"text": "Financial Statements\n..."},
+    ]
+
+    labeled = label_sections_structured(chunks, form_type="40-F")
+
+    assert [chunk["sectionLabel"] for chunk in labeled] == [
+        "business",
+        "business",
+        "mdna",
+        "financial_statements",
+    ]
+
+
+def test_40f_marker_ignores_toc_entries():
+    chunks = [
+        {
+            "text": (
+                "Annual Information Form\n"
+                "TABLE OF CONTENTS\n"
+                "Risk Factors ... 12\n"
+                "MD&A ... 20\n"
+            )
+        },
+        {"text": "We are a leading mining company..."},
+    ]
+
+    labeled = label_sections_structured(chunks, form_type="40-F")
+
+    assert [chunk["sectionLabel"] for chunk in labeled] == ["business", "business"]
+
+
+def test_40f_marker_boundary_in_middle_of_chunk():
+    chunks = [
+        {
+            "text": (
+                "Annual Information Form\n"
+                "AIF content...\n"
+                "Management's Discussion and Analysis\n"
+                "MD&A content..."
+            )
+        }
+    ]
+
+    labeled = label_sections_structured(chunks, form_type="40-F")
+
+    assert labeled[0]["sectionLabel"] == "mdna"
+
+
 def test_glossy_chunks_use_llm_section_ranges():
     chunks = [{"text": "CEO message"}, {"text": "Strategy"}, {"text": "Outlook"}]
 

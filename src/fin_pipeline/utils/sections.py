@@ -98,24 +98,15 @@ _20F_HEADER_PATTERNS = [
     ),
 ]
 
-_40F_HEADER_PATTERNS = [
-    (re.compile(r"\bANNUAL\s+INFORMATION\s+FORM\b", re.IGNORECASE), "business"),
-    (
-        re.compile(
-            r"\b(?:MANAGEMENT'?S\s+DISCUSSION\s+AND\s+ANALYSIS|MD&A)\b",
-            re.IGNORECASE,
-        ),
-        "mdna",
-    ),
-    (
-        re.compile(
-            r"\b(?:AUDITED\s+)?(?:CONSOLIDATED\s+)?FINANCIAL\s+STATEMENTS\b",
-            re.IGNORECASE,
-        ),
-        "financial_statements",
-    ),
-    (re.compile(r"\bRISK\s+FACTORS\b", re.IGNORECASE), "risk_factors"),
-]
+_40F_MARKER_LABELS = {
+    "annual information form": "business",
+    "management's discussion and analysis": "mdna",
+    "management discussion and analysis": "mdna",
+    "md&a": "mdna",
+    "audited financial statements": "financial_statements",
+    "financial statements": "financial_statements",
+    "risk factors": "risk_factors",
+}
 
 _GLOSSY_LABELS = {
     "ceo_letter",
@@ -173,12 +164,40 @@ def _apply_heading_patterns(
     return current_label
 
 
+def _label_40f_by_markers(chunks: list[dict]) -> list[dict]:
+    """Label 40-F chunks using the injected standalone exhibit markers."""
+    current_label: str | None = None
+    labeled_chunks: list[dict] = []
+    for chunk in chunks:
+        text = chunk.get("text", "")
+        if isinstance(text, str):
+            found: tuple[int, str] | None = None
+            in_table_of_contents = False
+            for line_match in re.finditer(r"(?m)^[ \t]*(.*?)[ \t]*$", text):
+                marker_text = line_match.group(1).strip().lower()
+                if marker_text == "table of contents":
+                    in_table_of_contents = True
+                    continue
+                if in_table_of_contents:
+                    continue
+                label = _40F_MARKER_LABELS.get(marker_text)
+                if label is not None:
+                    found = (line_match.start(), label)
+            if found is not None:
+                current_label = found[1]
+        labeled_chunks.append({**chunk, "sectionLabel": current_label})
+    return labeled_chunks
+
+
 def label_sections_structured(
     chunks: list[dict],
     form_type: str | None = None,
 ) -> list[dict]:
     """Label chunks from the filing's structured section headings."""
     selected_form = _structured_form_type(chunks, form_type)
+    if selected_form == "40-F":
+        return _label_40f_by_markers(chunks)
+
     labeled_chunks: list[dict] = []
     current_label: str | None = None
     for chunk in chunks:
@@ -187,10 +206,6 @@ def label_sections_structured(
             if selected_form == "20-F":
                 current_label = _apply_heading_patterns(
                     text, current_label, _20F_HEADER_PATTERNS
-                )
-            elif selected_form == "40-F":
-                current_label = _apply_heading_patterns(
-                    text, current_label, _40F_HEADER_PATTERNS
                 )
             else:
                 for match in _STRUCTURED_HEADER.finditer(text):
