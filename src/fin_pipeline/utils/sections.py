@@ -173,16 +173,16 @@ def _label_40f_by_markers(chunks: list[dict]) -> list[dict]:
         if isinstance(text, str):
             found: tuple[int, str] | None = None
             in_table_of_contents = False
-            for line_match in re.finditer(r"(?m)^[ \t]*(.*?)[ \t]*$", text):
-                marker_text = line_match.group(1).strip().lower()
+            offset = 0
+            for line in text.splitlines(keepends=True):
+                marker_text = line.strip().lower()
                 if marker_text == "table of contents":
                     in_table_of_contents = True
-                    continue
-                if in_table_of_contents:
-                    continue
-                label = _40F_MARKER_LABELS.get(marker_text)
-                if label is not None:
-                    found = (line_match.start(), label)
+                elif not in_table_of_contents:
+                    label = _40F_MARKER_LABELS.get(marker_text)
+                    if label is not None:
+                        found = (offset, label)
+                offset += len(line)
             if found is not None:
                 current_label = found[1]
         labeled_chunks.append({**chunk, "sectionLabel": current_label})

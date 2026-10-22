@@ -95,7 +95,10 @@ def _map_exhibit_to_section(description: str, doc_type: str) -> str:
 
 def _classify_exhibit_by_content(content: str) -> str | None:
     """Classify an exhibit from its opening heading when it is recognizable."""
-    visible = BeautifulSoup(content, "html.parser").get_text(" ", strip=True)[:800].lower()
+    soup = BeautifulSoup(content, "html.parser")
+    for tag in soup.find_all(["head", "script", "style", "meta"]):
+        tag.decompose()
+    visible = soup.get_text(" ", strip=True)[:800].lower()
     if (
         "consolidated financial statements" in visible
         or "audited financial statements" in visible

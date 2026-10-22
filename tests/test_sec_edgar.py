@@ -262,6 +262,17 @@ def test_classify_exhibit_strips_html():
     assert _classify_exhibit_by_content(content) == "financial_statements"
 
 
+def test_classify_exhibit_ignores_head_metadata():
+    content = (
+        '<html><head><meta name="description" '
+        'content="Annual Information Form"></head><body>'
+        "<h1>Consolidated Financial Statements</h1>"
+        "</body></html>"
+    )
+
+    assert _classify_exhibit_by_content(content) == "financial_statements"
+
+
 def test_40f_uses_content_classification_before_sequence():
     exhibit = SimpleNamespace(
         document_type="EX-99.1",

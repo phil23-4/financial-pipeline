@@ -182,6 +182,16 @@ def test_40f_marker_ignores_toc_entries():
     assert [chunk["sectionLabel"] for chunk in labeled] == ["business", "business"]
 
 
+def test_40f_marker_ignores_inline_cross_reference():
+    chunks = [
+        {"text": "Annual Information Form\nFor MD&A see exhibit 99.2.\n"}
+    ]
+
+    labeled = label_sections_structured(chunks, form_type="40-F")
+
+    assert labeled[0]["sectionLabel"] == "business"
+
+
 def test_40f_marker_boundary_in_middle_of_chunk():
     chunks = [
         {
