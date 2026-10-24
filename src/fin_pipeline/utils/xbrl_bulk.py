@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -26,6 +27,13 @@ FSDS_URL_TEMPLATE = (
 )
 SEC_USER_AGENT = "Phillip francis@phillipchapita.com"
 MIN_VALID_ZIP_BYTES = 1_000_000
+DOWNLOAD_TIMEOUT = 60
+_DOWNLOAD_RETRY_EXCEPTIONS = (
+    urllib.error.URLError,
+    TimeoutError,
+    ConnectionError,
+    ssl.SSLError,
+)
 
 CANONICAL_CONCEPTS = {
     "revenues": [
@@ -173,7 +181,7 @@ def _is_valid_zip_file(path: str | os.PathLike[str]) -> bool:
         return False
 
 
-def _download_with_progress(
+def _download_once(
     url: str,
     dest_path: str,
     chunk_size: int = 1_048_576,
@@ -202,7 +210,7 @@ def _download_with_progress(
     log.info(f"Downloading {url}")
     log.info(f"  -> {dest_path}")
 
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
         content_type = response.headers.get("Content-Type", "")
         if content_type and "zip" not in content_type.lower() and "octet-stream" not in content_type.lower():
             log.warning(
@@ -245,6 +253,57 @@ def _download_with_progress(
 
     os.replace(temporary_path, destination)
     return str(destination)
+
+
+def _download_with_progress(
+    url: str,
+    dest_path: str,
+    chunk_size: int = 1_048_576,
+) -> str:
+    """Retry transient download failures before reporting a permanent error."""
+    max_attempts = 3
+    last_error: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return _download_once(url, dest_path, chunk_size)
+        except _DOWNLOAD_RETRY_EXCEPTIONS as exc:
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+                raise
+            last_error = exc
+            log.warning(
+                f"Download failed (attempt {attempt + 1}/{max_attempts}): "
+                f"{type(exc).__name__}: {exc}"
+            )
+            for suffix in (".part", ".tmp"):
+                partial_path = Path(f"{dest_path}{suffix}")
+                try:
+                    partial_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if attempt < max_attempts - 1:
+                wait = 2**attempt
+                log.info(f"  Retrying in {wait}s...")
+                time.sleep(wait)
+        except RuntimeError as exc:
+            last_error = exc
+            for suffix in (".part", ".tmp"):
+                partial_path = Path(f"{dest_path}{suffix}")
+                try:
+                    partial_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if attempt < max_attempts - 1:
+                log.info("  Retrying corrupt download in 2s...")
+                time.sleep(2)
+                continue
+            raise
+
+    if last_error is None:
+        raise RuntimeError("Download failed without an underlying error")
+    raise RuntimeError(
+        f"Download failed after {max_attempts} attempts: "
+        f"{type(last_error).__name__}: {last_error}"
+    ) from last_error
 
 
 def _download(url: str, destination: Path, force: bool) -> str:

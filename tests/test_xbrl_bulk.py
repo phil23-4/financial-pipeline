@@ -1,4 +1,5 @@
 import json
+import ssl
 import zipfile
 from io import BytesIO
 from unittest.mock import patch
@@ -264,7 +265,79 @@ def test_download_has_timeout(tmp_path, monkeypatch):
 
     xbrl_bulk.download_companyfacts(str(tmp_path))
 
-    assert captured["timeout"] == 60
+    assert captured["timeout"] == xbrl_bulk.DOWNLOAD_TIMEOUT
+
+
+def test_download_retries_on_ssl_error(tmp_path):
+    destination = str(tmp_path / "retry.zip")
+    with (
+        patch(
+            "fin_pipeline.utils.xbrl_bulk._download_once",
+            side_effect=[ssl.SSLError("connection dropped")] * 2 + [destination],
+        ) as download_once,
+        patch("fin_pipeline.utils.xbrl_bulk.log.warning") as log_warning,
+        patch("fin_pipeline.utils.xbrl_bulk.time.sleep"),
+    ):
+        result = xbrl_bulk._download_with_progress(
+            "https://example.invalid/retry.zip", destination
+        )
+
+    assert result == destination
+    assert download_once.call_count == 3
+    assert log_warning.call_count == 2
+
+
+def test_download_gives_up_after_max_retries(tmp_path):
+    destination = str(tmp_path / "fail.zip")
+    with (
+        patch(
+            "fin_pipeline.utils.xbrl_bulk._download_once",
+            side_effect=xbrl_bulk.urllib.error.URLError("connection failed"),
+        ) as download_once,
+        patch("fin_pipeline.utils.xbrl_bulk.time.sleep"),
+        pytest.raises(RuntimeError, match="after 3 attempts"),
+    ):
+        xbrl_bulk._download_with_progress(
+            "https://example.invalid/fail.zip", destination
+        )
+
+    assert download_once.call_count == 3
+
+
+def test_download_cleans_part_file_between_retries(tmp_path):
+    destination = str(tmp_path / "partial.zip")
+    partial_path = tmp_path / "partial.zip.part"
+
+    def fail_after_writing_part(url, dest_path, *_args):
+        assert not partial_path.exists()
+        partial_path.write_bytes(b"partial")
+        raise xbrl_bulk.urllib.error.URLError("connection failed")
+
+    with (
+        patch(
+            "fin_pipeline.utils.xbrl_bulk._download_once",
+            side_effect=fail_after_writing_part,
+        ) as download_once,
+        patch("fin_pipeline.utils.xbrl_bulk.time.sleep"),
+        pytest.raises(RuntimeError, match="after 3 attempts"),
+    ):
+        xbrl_bulk._download_with_progress(
+            "https://example.invalid/partial.zip", destination
+        )
+
+    assert download_once.call_count == 3
+    assert not partial_path.exists()
+    assert not (tmp_path / "partial.zip.tmp").exists()
+
+
+def test_fsds_quarter_returns_none_on_retry_exhaustion(tmp_path):
+    with patch(
+        "fin_pipeline.utils.xbrl_bulk._download_with_progress",
+        side_effect=RuntimeError("Download failed after 3 attempts"),
+    ):
+        result = xbrl_bulk.download_fsds_quarter(2020, 3, str(tmp_path))
+
+    assert result is None
 
 
 def test_download_rejects_html_error_page(tmp_path, monkeypatch):
