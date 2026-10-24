@@ -4,6 +4,7 @@ import json
 import os
 import time
 from collections.abc import Callable
+from typing import Any
 
 from fin_pipeline.config.constants import (
     FILE_TYPE_HTML,
@@ -31,6 +32,8 @@ from fin_pipeline.utils.sections import (
 )
 from fin_pipeline.utils.xbrl_facts import extract_xbrl_facts
 
+_xbrl_bulk_cache: dict[tuple[str, str], Any] | None = None
+
 
 def _fallback_filing_id(file_path: str) -> str:
     """Build a stable filing ID when callers omit one."""
@@ -45,6 +48,56 @@ def _resolve_filing_id(metadata_input: dict, file_path: str) -> str:
     if isinstance(filing_id, str) and filing_id.strip():
         return filing_id.strip()
     return _fallback_filing_id(file_path)
+
+
+def _load_xbrl_bulk_cache(
+    parquet_path: str = "xbrl_bulk/xbrl_facts.parquet",
+) -> dict[tuple[str, str], Any] | None:
+    global _xbrl_bulk_cache
+    if _xbrl_bulk_cache is None and os.path.exists(parquet_path):
+        import pandas as pd
+
+        dataframe = pd.read_parquet(parquet_path)
+        _xbrl_bulk_cache = {
+            (row["accession_no"], row["concept"]): row["value"]
+            for _, row in dataframe.iterrows()
+        }
+    return _xbrl_bulk_cache
+
+
+def _xbrl_facts_for_payload(
+    payload: dict,
+    html_content_provider: Callable[[], str],
+) -> dict[str, Any] | None:
+    cache = _load_xbrl_bulk_cache()
+    filing_id = payload.get("filingId")
+    if cache and filing_id:
+        accession = str(filing_id).removeprefix("sec_")
+        ticker = str(payload.get("companyTicker") or "")
+        if ticker:
+            accession = accession.removeprefix(f"{ticker}_")
+        concepts = (
+            "revenues",
+            "capitalExpenditures",
+            "researchAndDevelopmentExpense",
+            "intangibleAssets",
+            "assets",
+            "segmentRevenue",
+        )
+        cached_facts = {
+            concept: cache[(accession, concept)]
+            for concept in concepts
+            if cache.get((accession, concept)) is not None
+        }
+        return cached_facts or None
+
+    parsed_facts = extract_xbrl_facts(html_content_provider())
+    return parsed_facts if parsed_facts else None
+
+
+def _read_html_content(file_path: str) -> str:
+    with open(file_path, encoding="utf-8", errors="replace") as source:
+        return source.read()
 
 
 def detect_file_type(file_path: str) -> str:
@@ -198,6 +251,13 @@ async def run_ingestion_pipeline(
                 if parsed.get(metadata_key) and existing_value in (None, "", "UNKNOWN"):
                     payload[metadata_key] = parsed[metadata_key]
 
+            if detect_file_type(file_path) == FILE_TYPE_HTML:
+                xbrl_facts = _xbrl_facts_for_payload(
+                    payload, lambda: _read_html_content(file_path)
+                )
+                if xbrl_facts:
+                    payload["xbrlFacts"] = xbrl_facts
+
             if isinstance(payload.get("metadataSources"), dict):
                 payload["metadataSources"] = json.dumps(
                     payload["metadataSources"], ensure_ascii=False
@@ -320,9 +380,11 @@ async def run_html_content_pipeline(
                 "documentStatus": "PROCESSED",
                 "documentStatusReason": parsed["reason"],
                 "documentType": "HTML",
-                "xbrlFacts": extract_xbrl_facts(html_content),
             }
         )
+        xbrl_facts = _xbrl_facts_for_payload(payload, lambda: html_content)
+        if xbrl_facts:
+            payload["xbrlFacts"] = xbrl_facts
         if metadata_input.get("exhibitSectionMap"):
             payload["exhibitSectionMap"] = metadata_input["exhibitSectionMap"]
         metadata_sources = parsed.get("metadataSources")

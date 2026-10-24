@@ -1,8 +1,14 @@
 import asyncio
+import json
 import os
+import time
+import urllib.error
+import zipfile
+from typing import Any
 
 import click
 
+from fin_pipeline.config.logger import pipeline_logger as log
 from fin_pipeline.export import export_filings_to_parquet
 from fin_pipeline.pipeline import (
     process_entire_directory,
@@ -11,6 +17,14 @@ from fin_pipeline.pipeline import (
     process_sec_edgar_csv_stream,
     process_sec_edgar_html_directory,
     run_ingestion_pipeline,
+)
+from fin_pipeline.utils.xbrl_bulk import (
+    download_companyfacts,
+    download_fsds_range,
+    parquet_columns,
+    parse_companyfacts_zip,
+    parse_fsds_zip,
+    read_cik_csv,
 )
 
 
@@ -226,7 +240,7 @@ def file(
     if dry_run:
         click.echo("🧪 Dry run completed; no database changes were made.")
     else:
-        click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Document registration sequence closed out.")
+        click.echo("✨ Document registration sequence closed out.")
 
 
 @main.command()
@@ -270,6 +284,160 @@ def export(
         raise click.ClickException(str(exc)) from exc
     click.echo(
         f"Exported filing and chunk Parquet files to {os.path.dirname(filings_path)}"
+    )
+
+
+@main.command("xbrl-bulk")
+@click.option(
+    "--download-dir",
+    default="xbrl_bulk",
+    show_default=True,
+    type=click.Path(file_okay=False, dir_okay=True),
+    help="Directory for companyfacts.zip and FSDS ZIPs",
+)
+@click.option("--start-year", default=2018, show_default=True, type=int)
+@click.option("--end-year", default=2025, show_default=True, type=int)
+@click.option(
+    "--skip-companyfacts",
+    is_flag=True,
+    help="Skip companyfacts.zip download/parse (use FSDS only)",
+)
+@click.option(
+    "--cik-csv",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="CSV with a 'cik' column. If omitted, parse all CIKs in the bulk data.",
+)
+@click.option("--force", is_flag=True, help="Re-download archives, ignoring checkpoints.")
+def xbrl_bulk(
+    download_dir: str,
+    start_year: int,
+    end_year: int,
+    skip_companyfacts: bool,
+    cik_csv: str | None,
+    force: bool,
+):
+    """Download SEC bulk XBRL data and write normalized facts to Parquet."""
+    started = time.monotonic()
+    try:
+        cik_list = read_cik_csv(cik_csv) if cik_csv else None
+        os.makedirs(download_dir, exist_ok=True)
+        companyfacts_path = None
+        if not skip_companyfacts:
+            companyfacts_path = download_companyfacts(download_dir, force=force)
+        downloaded_fsds = download_fsds_range(
+            start_year, end_year, download_dir, force=force
+        )
+        fsds_paths = [path for path in downloaded_fsds if path is not None]
+        unavailable_quarters = len(downloaded_fsds) - len(fsds_paths)
+        log.info(
+            f"Downloaded {len(fsds_paths)}/{len(downloaded_fsds)} quarters "
+            f"({unavailable_quarters} unavailable)."
+        )
+
+        rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        companyfacts_ranks: dict[tuple[str, str], tuple[str, bool, bool]] = {}
+        if companyfacts_path:
+            companyfacts = parse_companyfacts_zip(companyfacts_path, cik_list)
+            for cik, company in companyfacts.items():
+                for concept, facts in company.get("facts", {}).items():
+                    for fact in facts:
+                        accession = fact.get("accn")
+                        if not accession or "val" not in fact:
+                            continue
+                        key = (accession, concept)
+                        rank = (
+                            str(fact.get("end") or ""),
+                            fact.get("unit") == "USD",
+                            fact.get("fp") == "FY",
+                        )
+                        if key not in companyfacts_ranks or rank > companyfacts_ranks[key]:
+                            rows_by_key[key] = {
+                                "accession_no": accession,
+                                "cik": cik,
+                                "concept": concept,
+                                "value": fact["val"],
+                                "unit": fact.get("unit"),
+                                "fiscal_year": fact.get("fy"),
+                                "fiscal_period": fact.get("fp"),
+                                "form": fact.get("form"),
+                                "filed_date": fact.get("filed"),
+                            }
+                            companyfacts_ranks[key] = rank
+
+        for fsds_path in fsds_paths:
+            filings = parse_fsds_zip(fsds_path, cik_list)
+            for accession, filing in filings.items():
+                period = filing.get("period", "")
+                period_year = int(period[:4]) if period[:4].isdigit() else None
+                period_month = int(period[5:7]) if len(period) >= 7 and period[5:7].isdigit() else None
+                period_quarter = (
+                    f"Q{(period_month - 1) // 3 + 1}" if period_month else None
+                )
+                fiscal_period = (
+                    "FY"
+                    if filing.get("form") in {"10-K", "20-F", "40-F", "10-KT"}
+                    else period_quarter
+                )
+                for concept, value in filing.get("facts", {}).items():
+                    rows_by_key[(accession, concept)] = {
+                        "accession_no": accession,
+                        "cik": filing["cik"],
+                        "concept": concept,
+                        "value": value,
+                        "unit": filing.get("units", {}).get(concept),
+                        "fiscal_year": period_year,
+                        "fiscal_period": fiscal_period,
+                        "form": filing.get("form"),
+                        "filed_date": filing.get("filed"),
+                    }
+
+        import pandas as pd
+
+        dataframe = pd.DataFrame(
+            rows_by_key.values(),
+            columns=parquet_columns(),
+        )
+        output_path = os.path.join(download_dir, "xbrl_facts.parquet")
+        dataframe.to_parquet(output_path, index=False)
+        file_size_mb = os.path.getsize(output_path) / 1_000_000
+    except urllib.error.URLError as exc:
+        click.echo(f"❌ Network error during download: {exc}", err=True)
+        raise click.Abort() from exc
+    except TimeoutError as exc:
+        click.echo(f"❌ Network error during download: {exc}", err=True)
+        raise click.Abort() from exc
+    except KeyboardInterrupt as exc:
+        click.echo(
+            "\n⚠️  Interrupted. Partial downloads remain in "
+            f"{download_dir}/; re-run to resume.",
+            err=True,
+        )
+        raise click.Abort() from exc
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        ImportError,
+        zipfile.BadZipFile,
+        json.JSONDecodeError,
+    ) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    accession_count = len({key[0] for key in rows_by_key})
+    cik_count = len({row["cik"] for row in rows_by_key.values()})
+    fact_count = len(rows_by_key)
+    elapsed = time.monotonic() - started
+    log.info(
+        f"XBRL bulk export complete: {accession_count} filings, "
+        f"{fact_count} facts, {cik_count} CIKs"
+    )
+    click.echo(
+        f"\n✅ xbrl-bulk complete:\n"
+        f"  Filings processed: {accession_count}\n"
+        f"  Total facts:       {fact_count}\n"
+        f"  Output Parquet:    {output_path} ({file_size_mb:.1f}MB)\n"
+        f"  Runtime:           {elapsed:.1f}s"
     )
 
 

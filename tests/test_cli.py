@@ -1,3 +1,5 @@
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -89,6 +91,29 @@ def test_file_command_supports_dry_run(tmp_path):
     assert run_pipeline.call_args.kwargs["ocr_enabled"] is True
 
 
+def test_file_command_reports_success_for_standard_run(tmp_path):
+    document = tmp_path / "report.pdf"
+    document.write_bytes(b"%PDF-1.4")
+
+    with patch("fin_pipeline.cli.run_ingestion_pipeline", return_value=True):
+        result = CliRunner().invoke(
+            main,
+            [
+                "file",
+                str(document),
+                "--filing-id",
+                "local_report",
+                "--ticker",
+                "TLV",
+                "--type",
+                "ANNUAL_REPORT",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "Document registration sequence closed out." in result.output
+
+
 def test_file_command_reports_pipeline_failure(tmp_path):
     document = tmp_path / "report.pdf"
     document.write_bytes(b"%PDF-1.4")
@@ -170,3 +195,46 @@ def test_sec_stream_command_passes_dry_run(tmp_path):
 
     assert result.exit_code == 0
     assert process.call_args.kwargs["dry_run"] is True
+
+
+def test_xbrl_bulk_reports_unavailable_quarters_and_summary(tmp_path, monkeypatch):
+    class FakeDataFrame:
+        def to_parquet(self, path, index=False):
+            with open(path, "wb") as output:
+                output.write(b"parquet")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pandas",
+        SimpleNamespace(
+            DataFrame=lambda _rows, columns: FakeDataFrame(),
+        ),
+    )
+    monkeypatch.setattr(
+        "fin_pipeline.cli.download_fsds_range",
+        lambda *_args, **_kwargs: ["2026q1.zip", None],
+    )
+    monkeypatch.setattr(
+        "fin_pipeline.cli.parse_fsds_zip", lambda *_args: {}
+    )
+
+    with patch("fin_pipeline.cli.log.info") as log_info:
+        result = CliRunner().invoke(
+            main,
+            [
+                "xbrl-bulk",
+                "--download-dir",
+                str(tmp_path),
+                "--start-year",
+                "2026",
+                "--end-year",
+                "2026",
+                "--skip-companyfacts",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "✅ xbrl-bulk complete:" in result.output
+    assert "Filings processed: 0" in result.output
+    assert "Output Parquet:" in result.output
+    assert any("1/2 quarters (1 unavailable)" in call.args[0] for call in log_info.call_args_list)

@@ -66,6 +66,10 @@ export = [
     "pandas",
     "pyarrow",
 ]
+xbrl-bulk = [
+    "pandas",
+    "pyarrow",
+]
 
 [project.urls]
 Homepage = "https://github.com/phil23-4/financial-pipeline"

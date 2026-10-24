@@ -43,14 +43,17 @@ data/
 
 *.pdf
 
-*csv
+*.csv
+*.numbers
 data/analytics_data/
+xbrl_bulk/ 
 
 DATA_MAPPING_RECOMMENDATION.md
 IMPLEMENTATION_SUMMARY.md
 README copy.md
 Modelfile
 data/analytics_data/LOCK
+data/analytics_data/manifest/*.manifest
 data/analytics_data/manifest/00000000000000000000.manifest
 data/analytics_data/LOCK
 data/analytics_data/manifest/00000000000000000000.manifest

@@ -251,6 +251,22 @@ Optional SEC enrichment helpers:
 pip install -e ".[sec]"
 ```
 
+Optional SEC bulk XBRL downloads and Parquet output:
+
+```bash
+pip install -e ".[xbrl-bulk]"
+fin-pipeline xbrl-bulk --start-year 2018 --end-year 2025 --cik-csv companies.csv
+```
+
+The CIK CSV must contain a `cik` column. Omitting `--cik-csv` processes all
+available CIKs and can require substantial disk space and memory. Set a valid
+SEC contact identity in `src/fin_pipeline/utils/xbrl_bulk.py` before running
+the downloader. Downloads and parsing report progress in the logs. Successfully
+parsed archives receive `.done` checkpoints and are reused on later runs;
+incomplete temporary downloads are replaced automatically. Use `--force` to
+download the requested archives again. FSDS quarters not yet published (404)
+are skipped, and the command reports how many quarters were available.
+
 ## Environment configuration
 
 The project reads a mix of environment variables and `.env` values via `src/fin_pipeline/config/settings.py`.
