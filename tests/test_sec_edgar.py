@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
-from httpx import ReadTimeout
+from httpx import ConnectTimeout, ReadTimeout
 
 from fin_pipeline.cli import main
 from fin_pipeline.sec_edgar import (
@@ -102,6 +102,126 @@ def test_stream_retries_timeout_while_loading_filings(tmp_path, monkeypatch):
     assert results == []
     assert company.get_filings.call_count == 3
     assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+
+
+def test_stream_skips_company_on_network_error(tmp_path, monkeypatch):
+    csv_path = tmp_path / "companies.csv"
+    csv_path.write_text("ticker\nAAPL\nMSFT\n")
+
+    failing_company = MagicMock()
+    failing_company.get_ticker.return_value = "AAPL"
+    failing_company.get_filings.side_effect = ConnectTimeout("SEC lookup timed out")
+
+    successful_company = MagicMock()
+    successful_company.get_ticker.return_value = "MSFT"
+    filing = SimpleNamespace(
+        accession_no="0000000001-24-000001",
+        form="10-K",
+        company="Microsoft",
+        report_date="2024-12-31",
+        filing_date="2025-02-15",
+        cik=1234567890,
+        html=MagicMock(return_value="<html>ok</html>"),
+    )
+    successful_company.get_filings.return_value = [filing]
+
+    fake_edgar = SimpleNamespace(
+        Company=MagicMock(side_effect=[failing_company, successful_company]),
+        set_identity=MagicMock(),
+    )
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
+
+    with patch.dict("sys.modules", {"edgar": fake_edgar}):
+        results = list(stream_filings_from_csv(str(csv_path), forms=["10-K"]))
+
+    assert len(results) == 1
+    assert results[0][1]["companyTicker"] == "MSFT"
+
+
+def test_stream_skips_filing_on_retrieval_error(tmp_path, monkeypatch):
+    csv_path = tmp_path / "companies.csv"
+    csv_path.write_text("ticker\nAAPL\n")
+
+    company = MagicMock()
+    company.get_ticker.return_value = "AAPL"
+    bad_filing = SimpleNamespace(
+        accession_no="0000000001-24-000001",
+        form="10-K",
+        company="Example",
+        report_date="2024-12-31",
+        filing_date="2025-02-15",
+        cik=123,
+        html=MagicMock(side_effect=TimeoutError("fetch timeout")),
+    )
+    good_filing = SimpleNamespace(
+        accession_no="0000000002-24-000002",
+        form="10-K",
+        company="Example",
+        report_date="2024-12-31",
+        filing_date="2025-02-15",
+        cik=123,
+        html=MagicMock(return_value="<html>ok</html>"),
+    )
+    company.get_filings.return_value = [bad_filing, good_filing]
+
+    fake_edgar = SimpleNamespace(
+        Company=MagicMock(return_value=company),
+        set_identity=MagicMock(),
+    )
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
+
+    with patch.dict("sys.modules", {"edgar": fake_edgar}):
+        results = list(stream_filings_from_csv(str(csv_path), forms=["10-K"]))
+
+    assert len(results) == 1
+    assert results[0][1]["filingId"] == "sec_AAPL_0000000002-24-000002"
+
+
+def test_stream_continues_after_failure(tmp_path, monkeypatch):
+    csv_path = tmp_path / "companies.csv"
+    csv_path.write_text("ticker\nBAD\nGOOD1\nGOOD2\n")
+
+    first_company = MagicMock()
+    first_company.get_ticker.return_value = "BAD"
+    first_company.get_filings.side_effect = ConnectTimeout("failed lookup")
+
+    second_company = MagicMock()
+    second_company.get_ticker.return_value = "GOOD1"
+    filing_one = SimpleNamespace(
+        accession_no="0000000001-24-000001",
+        form="10-K",
+        company="Good One",
+        report_date="2024-12-31",
+        filing_date="2025-02-15",
+        cik=1,
+        html=MagicMock(return_value="<html>one</html>"),
+    )
+    second_company.get_filings.return_value = [filing_one]
+
+    third_company = MagicMock()
+    third_company.get_ticker.return_value = "GOOD2"
+    filing_two = SimpleNamespace(
+        accession_no="0000000002-24-000001",
+        form="10-K",
+        company="Good Two",
+        report_date="2024-12-31",
+        filing_date="2025-02-15",
+        cik=2,
+        html=MagicMock(return_value="<html>two</html>"),
+    )
+    third_company.get_filings.return_value = [filing_two]
+
+    fake_edgar = SimpleNamespace(
+        Company=MagicMock(side_effect=[first_company, second_company, third_company]),
+        set_identity=MagicMock(),
+    )
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
+
+    with patch.dict("sys.modules", {"edgar": fake_edgar}):
+        results = list(stream_filings_from_csv(str(csv_path), forms=["10-K"]))
+
+    assert len(results) == 2
+    assert {result[1]["companyTicker"] for result in results} == {"GOOD1", "GOOD2"}
 
 
 def test_stream_uses_40f_exhibits_and_includes_section_map(tmp_path, monkeypatch):

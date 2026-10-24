@@ -238,54 +238,75 @@ def _stream_filings_from_csv(
     set_identity(os.getenv("EDGAR_IDENTITY") or EDGAR_IDENTITY)
     for row in read_company_csv(csv_path):
         identifier = row.get("cik") or row.get("ticker")
-        company = _retry_sec_request(
-            lambda identifier=identifier: Company(identifier),
-            f"company lookup for {identifier}",
-        )
-        ticker = (
-            row.get("ticker")
-            or _retry_sec_request(
-                company.get_ticker,
-                f"ticker lookup for {identifier}",
+        try:
+            company = _retry_sec_request(
+                lambda identifier=identifier: Company(identifier),
+                f"company lookup for {identifier}",
             )
-            or f"CIK{str(company.cik).zfill(10)}"
-        )
-        requested_forms = forms if forms is not None else _forms(row)
-        requested_years = (
-            list(range(year_range[0], year_range[1] + 1)) if year_range else _year(row)
-        )
-        filings = _retry_sec_request(
-            lambda company=company, requested_forms=requested_forms, requested_years=requested_years: company.get_filings(
-                form=requested_forms,
-                year=requested_years,
-                amendments=False,
-                trigger_full_load=True,
-            ),
-            f"filings lookup for {identifier}",
-        )
+            ticker = (
+                row.get("ticker")
+                or _retry_sec_request(
+                    company.get_ticker,
+                    f"ticker lookup for {identifier}",
+                )
+                or f"CIK{str(company.cik).zfill(10)}"
+            )
+            requested_forms = forms if forms is not None else _forms(row)
+            requested_years = (
+                list(range(year_range[0], year_range[1] + 1))
+                if year_range
+                else _year(row)
+            )
+            filings = _retry_sec_request(
+                lambda company=company, requested_forms=requested_forms, requested_years=requested_years: company.get_filings(
+                    form=requested_forms,
+                    year=requested_years,
+                    amendments=False,
+                    trigger_full_load=True,
+                ),
+                f"filings lookup for {identifier}",
+            )
+        except Exception as exc:
+            log.error(
+                f"Skipping {identifier}: filings lookup failed after "
+                f"retries ({type(exc).__name__}: {exc}); continuing"
+            )
+            continue
+
+        if not filings:
+            log.info(f"Skipping {identifier}: no filings found for the requested filters")
+            continue
+
         limit = _max_filings(row)
         for filing in filings[:limit] if limit else filings:
-            form = str(filing.form).upper()
-            section_map: dict[str, str] = {}
-            if form == "40-F":
-                html_content, section_map = _get_40f_exhibit_content(filing)
-                if html_content is None:
-                    log.warning(
-                        f"Skipping 40-F {filing.accession_no} ({ticker}): "
-                        "no retrievable exhibits"
+            try:
+                form = str(filing.form).upper()
+                section_map: dict[str, str] = {}
+                if form == "40-F":
+                    html_content, section_map = _get_40f_exhibit_content(filing)
+                    if html_content is None:
+                        log.warning(
+                            f"Skipping 40-F {filing.accession_no} ({ticker}): "
+                            "no retrievable exhibits"
+                        )
+                        continue
+                    log.info(
+                        f"40-F {filing.accession_no} ({ticker}): concatenated "
+                        f"{len(section_map)} exhibits -> {len(html_content)} chars"
                     )
-                    continue
-                log.info(
-                    f"40-F {filing.accession_no} ({ticker}): concatenated "
-                    f"{len(section_map)} exhibits -> {len(html_content)} chars"
+                else:
+                    html_content = _fetch_filing_html(filing)
+                    if not html_content:
+                        log.warning(
+                            f"Skipping {filing.accession_no}: no HTML primary document"
+                        )
+                        continue
+            except Exception as exc:
+                log.error(
+                    f"Skipping {filing.accession_no} ({ticker}): html retrieval failed "
+                    f"({type(exc).__name__}: {exc})"
                 )
-            else:
-                html_content = _fetch_filing_html(filing)
-                if not html_content:
-                    log.warning(
-                        f"Skipping {filing.accession_no}: no HTML primary document"
-                    )
-                    continue
+                continue
 
             accession = filing.accession_no
             report_date = getattr(filing, "report_date", None)

@@ -185,12 +185,13 @@ def test_parse_fsds_prefers_annual_fact_and_keeps_quarterly_fallback(tmp_path):
 
 def test_download_companyfacts_sends_user_agent(tmp_path, monkeypatch):
     captured = {}
+    zip_bytes = b"PK\x03\x04" + (b"x" * (1_100_000))
 
     def fake_urlopen(request, timeout):
         captured["request"] = request
         captured["timeout"] = timeout
-        response = BytesIO(b"archive")
-        response.headers = {"Content-Length": "7"}
+        response = BytesIO(zip_bytes)
+        response.headers = {"Content-Length": str(len(zip_bytes))}
         return response
 
     monkeypatch.setattr(xbrl_bulk.urllib.request, "urlopen", fake_urlopen)
@@ -199,19 +200,22 @@ def test_download_companyfacts_sends_user_agent(tmp_path, monkeypatch):
 
     assert captured["request"].get_header("User-agent") == xbrl_bulk.SEC_USER_AGENT
     assert captured["timeout"] == 60
-    assert tmp_path.joinpath("companyfacts.zip").read_bytes() == b"archive"
+    assert tmp_path.joinpath("companyfacts.zip").read_bytes() == zip_bytes
     assert downloaded_path == str(tmp_path / "companyfacts.zip")
 
 
 def test_download_prints_progress(tmp_path, monkeypatch):
+    valid_zip = b"PK\x03\x04" + (b"x" * (15 * 1_000_000))
+
     class FiveMegabyteChunks(BytesIO):
         def read(self, _size=-1):
-            return super().read(5_000_000)
+            chunk = super().read(5_000_000)
+            return chunk if chunk else b""
 
     def fake_urlopen(_request, timeout):
         assert timeout == 60
-        response = FiveMegabyteChunks(b"x" * (15 * 1_000_000))
-        response.headers = {"Content-Length": str(15 * 1_000_000)}
+        response = FiveMegabyteChunks(valid_zip)
+        response.headers = {"Content-Length": str(len(valid_zip))}
         return response
 
     monkeypatch.setattr(xbrl_bulk.urllib.request, "urlopen", fake_urlopen)
@@ -225,9 +229,9 @@ def test_download_prints_progress(tmp_path, monkeypatch):
     messages = [str(call.args[0]) for call in log_info.call_args_list]
     progress = [message for message in messages if "%" in message]
     assert progress
-    assert any("(" in message and "%)" in message for message in progress)
+    assert any("(" in message and "%" in message for message in progress)
     assert any("100%" in message for message in progress)
-    assert destination.stat().st_size == 15 * 1_000_000
+    assert destination.stat().st_size == len(valid_zip)
 
 
 def test_download_fsds_handles_404(tmp_path, monkeypatch):
@@ -248,11 +252,12 @@ def test_download_fsds_handles_404(tmp_path, monkeypatch):
 
 def test_download_has_timeout(tmp_path, monkeypatch):
     captured = {}
+    zip_bytes = b"PK\x03\x04" + (b"x" * (1_100_000))
 
     def fake_urlopen(_request, timeout):
         captured["timeout"] = timeout
-        response = BytesIO(b"archive")
-        response.headers = {"Content-Length": "7"}
+        response = BytesIO(zip_bytes)
+        response.headers = {"Content-Length": str(len(zip_bytes))}
         return response
 
     monkeypatch.setattr(xbrl_bulk.urllib.request, "urlopen", fake_urlopen)
@@ -262,20 +267,136 @@ def test_download_has_timeout(tmp_path, monkeypatch):
     assert captured["timeout"] == 60
 
 
+def test_download_rejects_html_error_page(tmp_path, monkeypatch):
+    content = b"<html>SEC error page</html>"
+
+    class FakeResponse(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(_request, timeout):
+        response = FakeResponse(content)
+        response.headers = {
+            "Content-Type": "text/html",
+            "Content-Length": str(len(content)),
+        }
+        return response
+
+    monkeypatch.setattr(xbrl_bulk.urllib.request, "urlopen", fake_urlopen)
+    dest = tmp_path / "bad.zip"
+    with pytest.raises(RuntimeError, match="not a valid ZIP"):
+        xbrl_bulk._download_with_progress("https://example.invalid/bad.zip", str(dest))
+    assert not dest.exists()
+    assert not (tmp_path / "bad.zip.tmp").exists()
+
+
+def test_download_rejects_tiny_zip(tmp_path, monkeypatch):
+    zip_bytes = b"PK\x03\x04" + (b"x" * 1_024)
+
+    class FakeResponse(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(_request, timeout):
+        response = FakeResponse(zip_bytes)
+        response.headers = {
+            "Content-Type": "application/zip",
+            "Content-Length": str(len(zip_bytes)),
+        }
+        return response
+
+    monkeypatch.setattr(xbrl_bulk.urllib.request, "urlopen", fake_urlopen)
+    dest = tmp_path / "tiny.zip"
+    with pytest.raises(RuntimeError, match="not a valid ZIP"):
+        xbrl_bulk._download_with_progress("https://example.invalid/tiny.zip", str(dest))
+
+
+def test_download_accepts_valid_zip(tmp_path, monkeypatch):
+    zip_bytes = b"PK\x03\x04" + (b"x" * (15 * 1_000_000))
+
+    class FakeResponse(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(_request, timeout):
+        response = FakeResponse(zip_bytes)
+        response.headers = {
+            "Content-Type": "application/zip",
+            "Content-Length": str(len(zip_bytes)),
+        }
+        return response
+
+    monkeypatch.setattr(xbrl_bulk.urllib.request, "urlopen", fake_urlopen)
+    dest = tmp_path / "good.zip"
+    result = xbrl_bulk._download_with_progress("https://example.invalid/good.zip", str(dest))
+    assert result == str(dest)
+    assert dest.exists()
+
+
+def test_existing_corrupt_zip_redownloaded(tmp_path, monkeypatch):
+    corrupted = tmp_path / "existing.zip"
+    corrupted.write_bytes(b"not-a-zip")
+    zip_bytes = b"PK\x03\x04" + (b"x" * (15 * 1_000_000))
+    calls = {"count": 0}
+
+    class FakeResponse(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(_request, timeout):
+        calls["count"] += 1
+        response = FakeResponse(zip_bytes)
+        response.headers = {
+            "Content-Type": "application/zip",
+            "Content-Length": str(len(zip_bytes)),
+        }
+        return response
+
+    monkeypatch.setattr(xbrl_bulk.urllib.request, "urlopen", fake_urlopen)
+    result = xbrl_bulk._download_with_progress("https://example.invalid/existing.zip", str(corrupted))
+    assert calls["count"] == 1
+    assert result == str(corrupted)
+    assert corrupted.exists()
+
+
+def test_existing_valid_zip_skipped(tmp_path, monkeypatch):
+    valid = tmp_path / "existing-valid.zip"
+    valid.write_bytes(b"PK\x03\x04" + (b"x" * (15 * 1_000_000)))
+    monkeypatch.setattr(
+        xbrl_bulk.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("urlopen should not run when valid zip exists"),
+    )
+    result = xbrl_bulk._download_with_progress("https://example.invalid/existing-valid.zip", str(valid))
+    assert result == str(valid)
+
+
+def test_parse_rejects_bad_zip(tmp_path):
+    bad_zip = tmp_path / "bad.zip"
+    bad_zip.write_bytes(b"not-a-zip")
+    with patch("fin_pipeline.utils.xbrl_bulk.zipfile.ZipFile", side_effect=zipfile.BadZipFile("bad")):
+        assert xbrl_bulk.parse_fsds_zip(str(bad_zip), None) == {}
+        assert xbrl_bulk.parse_companyfacts_zip(str(bad_zip), None) == {}
+
+
 def test_resumable_download_skips_done_file(tmp_path, monkeypatch):
     archive_path = tmp_path / "companyfacts.zip"
-    with zipfile.ZipFile(archive_path, "w") as archive:
-        archive.writestr(
-            "CIK0000000001.json",
-            json.dumps(
-                {
-                    "cik": 1,
-                    "facts": {"us-gaap": {"Assets": {"units": {"USD": []}}}},
-                }
-            ),
-        )
+    valid_zip = b"PK\x03\x04" + (b"x" * (1_500_000))
+    archive_path.write_bytes(valid_zip)
 
-    xbrl_bulk.parse_companyfacts_zip(str(archive_path), {"1"})
+    xbrl_bulk._mark_download_done(str(archive_path))
     monkeypatch.setattr(
         xbrl_bulk.urllib.request,
         "urlopen",

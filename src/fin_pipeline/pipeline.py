@@ -55,12 +55,15 @@ def _load_xbrl_bulk_cache(
 ) -> dict[tuple[str, str], Any] | None:
     global _xbrl_bulk_cache
     if _xbrl_bulk_cache is None and os.path.exists(parquet_path):
+        from fin_pipeline.utils.xbrl_bulk import CANONICAL_CONCEPTS
+
         import pandas as pd
 
         dataframe = pd.read_parquet(parquet_path)
         _xbrl_bulk_cache = {
             (row["accession_no"], row["concept"]): row["value"]
             for _, row in dataframe.iterrows()
+            if row["concept"] in CANONICAL_CONCEPTS
         }
     return _xbrl_bulk_cache
 
@@ -72,18 +75,13 @@ def _xbrl_facts_for_payload(
     cache = _load_xbrl_bulk_cache()
     filing_id = payload.get("filingId")
     if cache and filing_id:
+        from fin_pipeline.utils.xbrl_bulk import CANONICAL_CONCEPTS
+
         accession = str(filing_id).removeprefix("sec_")
         ticker = str(payload.get("companyTicker") or "")
         if ticker:
             accession = accession.removeprefix(f"{ticker}_")
-        concepts = (
-            "revenues",
-            "capitalExpenditures",
-            "researchAndDevelopmentExpense",
-            "intangibleAssets",
-            "assets",
-            "segmentRevenue",
-        )
+        concepts = tuple(CANONICAL_CONCEPTS)
         cached_facts = {
             concept: cache[(accession, concept)]
             for concept in concepts
@@ -635,6 +633,8 @@ async def process_sec_edgar_csv_stream(
     from fin_pipeline.sec_edgar import SecEdgarFetchError, stream_filings_from_csv
 
     processed = 0
+    skipped = 0
+    failed = 0
     try:
         for html_content, metadata in stream_filings_from_csv(
             csv_path, year_range=year_range, forms=forms
@@ -643,13 +643,17 @@ async def process_sec_edgar_csv_stream(
             if not await run_html_content_pipeline(
                 metadata, html_content, dry_run=dry_run
             ):
+                failed += 1
                 log.error(
                     "⏹️ Stopping streamed SEC batch because the current filing failed."
                 )
                 return False
     except SecEdgarFetchError as exc:
+        failed += 1
         log.error(f"⏹️ SEC stream stopped because a filing could not be downloaded: {exc}")
         return False
 
-    log.info(f"📋 Streamed {processed} SEC filings from CSV sequentially.")
+    log.info(
+        f"📋 SEC stream summary: processed={processed}, skipped={skipped}, failed={failed}."
+    )
     return True
