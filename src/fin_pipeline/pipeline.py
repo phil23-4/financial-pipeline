@@ -185,6 +185,18 @@ async def run_ingestion_pipeline(
         "filingId": filing_id,
         "source": source.upper(),
     }
+    payload["periodEndDate"] = metadata_input.get("periodEndDate")
+    payload["fiscalYearEndMonth"] = metadata_input.get("fiscalYearEndMonth")
+    payload["isAmendment"] = metadata_input.get("isAmendment", False)
+    payload["language"] = metadata_input.get("language")
+    payload["pageCount"] = metadata_input.get("pageCount")
+    payload["industryCodeRaw"] = metadata_input.get("industryCodeRaw")
+    payload["gicsCode"] = metadata_input.get("gicsCode")
+    payload["gicsSector"] = metadata_input.get("gicsSector")
+    payload["industryConfidence"] = metadata_input.get("industryConfidence")
+    payload["xbrlCurrency"] = None
+    payload["xbrlProvenance"] = None
+    payload["xbrlSource"] = None
 
     if not os.path.exists(file_path):
         log.error(f"❌ File missing on target file execution block path: {file_path}")
@@ -352,6 +364,18 @@ async def run_html_content_pipeline(
         "filingId": filing_id,
         "source": source.upper(),
     }
+    payload["periodEndDate"] = metadata_input.get("periodEndDate")
+    payload["fiscalYearEndMonth"] = metadata_input.get("fiscalYearEndMonth")
+    payload["isAmendment"] = metadata_input.get("isAmendment", False)
+    payload["language"] = metadata_input.get("language")
+    payload["pageCount"] = metadata_input.get("pageCount")
+    payload["industryCodeRaw"] = metadata_input.get("industryCodeRaw")
+    payload["gicsCode"] = metadata_input.get("gicsCode")
+    payload["gicsSector"] = metadata_input.get("gicsSector")
+    payload["industryConfidence"] = metadata_input.get("industryConfidence")
+    payload["xbrlCurrency"] = None
+    payload["xbrlProvenance"] = None
+    payload["xbrlSource"] = None
     try:
         parsed = parse_html_content(html_content)
         if payload.get("sourceType") == "structured_filing":

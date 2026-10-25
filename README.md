@@ -440,6 +440,14 @@ The database side is managed in:
 - `src/fin_pipeline/db/connection_pool.py`
 - `src/fin_pipeline/db/relations.py`
 
+## Metadata fields (added 2025-10)
+
+`periodEndDate`, `fiscalYearEndMonth`, `language`, `pageCount`,
+`industryCodeRaw`, `gicsCode`, `gicsSector`, `industryConfidence`, and
+`isAmendment` are populated by the metadata extraction pass.
+`xbrlCurrency`, `xbrlProvenance`, and `xbrlSource` are populated by the XBRL
+selection pass. All are optional; existing rows remain valid.
+
 Company graph nodes are keyed by a deterministic hash of the uppercase ticker
 and the case-folded, whitespace-normalized company name. This keeps same-ticker
 companies with different names separate. If the company name is unavailable,

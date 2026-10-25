@@ -112,11 +112,17 @@ def enrich_filing_metadata_with_edgartools(
     if not (os.getenv("EDGAR_IDENTITY") or EDGAR_IDENTITY) or not metadata.get("cik"):
         return metadata
 
+    from fin_pipeline.sec_edgar import SecEdgarFetchError, _retry_sec_request
+
     try:
         from edgar import Company
 
-        filings = Company(metadata["cik"]).get_filings(
-            form=metadata.get("filingType"), accession_number=accession_number
+        filings = _retry_sec_request(
+            lambda: Company(metadata["cik"]).get_filings(
+                form=metadata.get("filingType"),
+                accession_number=accession_number,
+            ),
+            f"metadata enrichment for filing {accession_number}",
         )
         if not filings:
             return metadata
@@ -139,6 +145,12 @@ def enrich_filing_metadata_with_edgartools(
                         )
                         break
         return enriched
+    except SecEdgarFetchError as exc:
+        log.warning(
+            f"SEC metadata enrichment unavailable for filing "
+            f"{accession_number} after retries: {exc}"
+        )
+        return metadata
     except (AttributeError, ImportError, KeyError, OSError, TypeError, ValueError):
         return metadata
 

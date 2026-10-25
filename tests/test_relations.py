@@ -27,6 +27,38 @@ def test_company_schema_allows_duplicate_tickers_but_requires_unique_company_key
     assert "idx_company_ticker ON TABLE company COLUMNS ticker UNIQUE;" not in schema
 
 
+def test_filing_schema_includes_metadata_and_xbrl_placeholder_fields():
+    schema = _build_schema_sql()
+
+    for field in (
+        "periodEndDate      ON TABLE exchange_filing TYPE option<datetime>",
+        "fiscalYearEndMonth ON TABLE exchange_filing TYPE option<int>",
+        "isAmendment        ON TABLE exchange_filing TYPE bool",
+        "language           ON TABLE exchange_filing TYPE option<string>",
+        "pageCount          ON TABLE exchange_filing TYPE option<int>",
+        "industryCodeRaw    ON TABLE exchange_filing TYPE option<string>",
+        "gicsCode           ON TABLE exchange_filing TYPE option<string>",
+        "gicsSector         ON TABLE exchange_filing TYPE option<string>",
+        "industryConfidence ON TABLE exchange_filing TYPE option<float>",
+        "xbrlCurrency       ON TABLE exchange_filing TYPE option<string>",
+        "xbrlProvenance     ON TABLE exchange_filing TYPE option<string>",
+        "xbrlSource         ON TABLE exchange_filing TYPE option<string>",
+    ):
+        assert f"DEFINE FIELD IF NOT EXISTS {field};" in schema
+    assert (
+        "DEFINE INDEX IF NOT EXISTS idx_ef_periodEnd   ON TABLE exchange_filing "
+        "COLUMNS periodEndDate;"
+    ) in schema
+    assert (
+        "DEFINE INDEX IF NOT EXISTS idx_ef_gicsCode    ON TABLE exchange_filing "
+        "COLUMNS gicsCode;"
+    ) in schema
+    assert (
+        "DEFINE INDEX IF NOT EXISTS idx_ef_gicsSector  ON TABLE exchange_filing "
+        "COLUMNS gicsSector;"
+    ) in schema
+
+
 def test_schema_initialization_removes_the_old_unique_ticker_index(monkeypatch):
     monkeypatch.setattr(database, "COMPANY_TABLE", "")
 

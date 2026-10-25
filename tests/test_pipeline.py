@@ -1,14 +1,16 @@
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from httpx import ConnectTimeout
 
 from fin_pipeline.config.logger import serialize_json_log
 from fin_pipeline.db import connection as connection_module
 from fin_pipeline.db import relations
 from fin_pipeline.db.connection import SurrealConnection
+from fin_pipeline.models.schemas import ExchangeFilingModel
 from fin_pipeline.pipeline import (
     process_mixed_directory,
     process_sec_edgar_csv_stream,
@@ -17,11 +19,40 @@ from fin_pipeline.pipeline import (
 )
 from fin_pipeline.sec_edgar import SecEdgarFetchError
 from fin_pipeline.utils.html_parser import (
+    enrich_filing_metadata_with_edgartools,
     extract_filing_metadata,
     extract_text_from_html,
     parse_html_content,
 )
 from fin_pipeline.utils.xbrl_facts import extract_xbrl_facts
+
+
+def test_edgar_metadata_enrichment_retries_timeout_and_preserves_fallback(
+    monkeypatch,
+):
+    company = SimpleNamespace(
+        get_filings=MagicMock(
+            side_effect=ConnectTimeout("SEC handshake timed out")
+        )
+    )
+    fake_edgar = SimpleNamespace(Company=lambda _cik: company)
+    metadata = {
+        "cik": "1234",
+        "filingType": "10-K",
+        "stockName": "Example Corp",
+    }
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
+
+    with (
+        patch.dict("sys.modules", {"edgar": fake_edgar}),
+        patch("fin_pipeline.sec_edgar.time.sleep"),
+    ):
+        enriched = enrich_filing_metadata_with_edgartools(
+            metadata, "0000000001-24-000001"
+        )
+
+    assert enriched is metadata
+    assert company.get_filings.call_count == 3
 
 
 @pytest.mark.asyncio
@@ -423,10 +454,14 @@ def test_html_chunks_are_sequential_nonempty_pseudo_pages():
 @patch("fin_pipeline.pipeline.SurrealConnection")
 @patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
 async def test_html_content_pipeline_ingests_without_file(
-    mock_graph_rel, mock_surreal_conn
+    mock_graph_rel, mock_surreal_conn, monkeypatch
 ):
     mock_db = AsyncMock()
     mock_surreal_conn.return_value.__aenter__.return_value = mock_db
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_xbrl_bulk_cache",
+        lambda: None,
+    )
 
     completed = await run_html_content_pipeline(
         {
@@ -452,6 +487,215 @@ async def test_html_content_pipeline_ingests_without_file(
     assert document_chunks[0]["sectionLabel"] == "business"
     assert json.loads(payload["xbrlFacts"])["assets"] == 42
     mock_graph_rel.assert_awaited_once()
+
+
+async def _run_schema_placeholder_ingestion(
+    metadata, tmp_path, monkeypatch, route
+):
+    db = AsyncMock()
+    connection_context = AsyncMock()
+    connection_context.__aenter__.return_value = db
+    connection_context.__aexit__.return_value = False
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline.SurrealConnection",
+        lambda: connection_context,
+    )
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline.establish_graph_relations",
+        AsyncMock(),
+    )
+    parsed = {
+        "text": "Test filing",
+        "chunks": [],
+        "tables": [],
+        "table_cnt": 0,
+        "reason": "test",
+    }
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline.parse_document",
+        lambda *_args, **_kwargs: parsed,
+    )
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline.parse_html_content",
+        lambda *_args, **_kwargs: parsed,
+    )
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline.enrich_filing_metadata_with_edgartools",
+        lambda result, _accession: result,
+    )
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._xbrl_facts_for_payload",
+        lambda *_args, **_kwargs: {"assets": 42},
+    )
+    if route == "file":
+        html_path = tmp_path / "placeholder.html"
+        html_path.write_text("<html><body>Test filing</body></html>")
+        completed = await run_ingestion_pipeline(
+            metadata, str(html_path), source="SEC", ocr_enabled=False
+        )
+    else:
+        completed = await run_html_content_pipeline(
+            metadata, "<html><body>Test filing</body></html>"
+        )
+
+    assert completed is True
+    db.upsert.assert_awaited_once()
+    return db.upsert.call_args.args[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["file", "html"])
+async def test_new_fields_default_to_none(tmp_path, monkeypatch, route):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": f"schema_defaults_{route}",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+        },
+        tmp_path,
+        monkeypatch,
+        route,
+    )
+
+    for field in (
+        "periodEndDate",
+        "fiscalYearEndMonth",
+        "language",
+        "pageCount",
+        "industryCodeRaw",
+        "gicsCode",
+        "gicsSector",
+        "industryConfidence",
+        "xbrlCurrency",
+        "xbrlProvenance",
+        "xbrlSource",
+    ):
+        assert record[field] is None
+    assert record["isAmendment"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["file", "html"])
+async def test_new_fields_persist_from_metadata(tmp_path, monkeypatch, route):
+    metadata_fields = {
+        "periodEndDate": "2023-12-31",
+        "fiscalYearEndMonth": 12,
+        "isAmendment": True,
+        "language": "en",
+        "pageCount": 42,
+        "industryCodeRaw": "IT Software & Services",
+        "gicsCode": "45102010",
+        "gicsSector": "45",
+        "industryConfidence": 0.95,
+    }
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": f"schema_metadata_{route}",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+            **metadata_fields,
+        },
+        tmp_path,
+        monkeypatch,
+        route,
+    )
+
+    assert record["periodEndDate"] == "2023-12-31T00:00:00Z"
+    for field, value in metadata_fields.items():
+        if field != "periodEndDate":
+            assert record[field] == value
+
+
+@pytest.mark.asyncio
+async def test_is_amendment_default_false(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "schema_amendment_default",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+    )
+
+    assert record["isAmendment"] is False
+
+
+@pytest.mark.asyncio
+async def test_period_end_date_validator_appends_time(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "schema_period_end",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+            "periodEndDate": "2023-12-31",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+    )
+
+    assert record["periodEndDate"] == "2023-12-31T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_xbrl_placeholder_fields_remain_none(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "schema_xbrl_placeholders",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+            "xbrlCurrency": "USD",
+            "xbrlProvenance": '{"assets": {"tag": "Assets"}}',
+            "xbrlSource": "bulk",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+    )
+
+    assert json.loads(record["xbrlFacts"]) == {"assets": 42}
+    assert record["xbrlCurrency"] is None
+    assert record["xbrlProvenance"] is None
+    assert record["xbrlSource"] is None
+
+
+def test_existing_records_remain_valid_without_new_fields():
+    record = ExchangeFilingModel(
+        filingId="legacy_record",
+        companyTicker="TEST",
+        stockCode="UNKNOWN",
+        exchange="UNKNOWN",
+        filingType="10-K",
+        source="SEC",
+    ).model_dump()
+
+    for field in (
+        "periodEndDate",
+        "fiscalYearEndMonth",
+        "language",
+        "pageCount",
+        "industryCodeRaw",
+        "gicsCode",
+        "gicsSector",
+        "industryConfidence",
+        "xbrlCurrency",
+        "xbrlProvenance",
+        "xbrlSource",
+    ):
+        assert record[field] is None
+    assert record["isAmendment"] is False
 
 
 @pytest.mark.asyncio

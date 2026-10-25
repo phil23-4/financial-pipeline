@@ -39,6 +39,20 @@ class ExchangeFilingModel(BaseModel):
     source: str
     sourceType: Literal["structured_filing", "glossy_report", "unknown"] = "unknown"
     reportingYear: int | None = None
+    # Metadata extraction fields
+    periodEndDate: str | None = None
+    fiscalYearEndMonth: int | None = None
+    isAmendment: bool = False
+    language: str | None = None
+    pageCount: int | None = None
+    industryCodeRaw: str | None = None
+    gicsCode: str | None = None
+    gicsSector: str | None = None
+    industryConfidence: float | None = None
+    # XBRL provenance fields
+    xbrlCurrency: str | None = None
+    xbrlProvenance: str | None = None
+    xbrlSource: str | None = None
     updatedAt: str = Field(
         default_factory=lambda: datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
@@ -61,6 +75,15 @@ class ExchangeFilingModel(BaseModel):
     @field_validator("filingDate", mode="before")
     @classmethod
     def format_date(cls, value):
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if isinstance(value, str) and len(value) == 10:
+            return f"{value}T00:00:00Z"
+        return value
+
+    @field_validator("periodEndDate", mode="before")
+    @classmethod
+    def format_period_end_date(cls, value):
         if isinstance(value, datetime):
             return value.strftime("%Y-%m-%dT%H:%M:%SZ")
         if isinstance(value, str) and len(value) == 10:

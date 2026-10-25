@@ -234,6 +234,18 @@ DEFINE FIELD IF NOT EXISTS documentStatus       ON TABLE exchange_filing TYPE op
 DEFINE FIELD IF NOT EXISTS documentStatusReason ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS sourceType            ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS reportingYear         ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS periodEndDate      ON TABLE exchange_filing TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS fiscalYearEndMonth ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS isAmendment        ON TABLE exchange_filing TYPE bool;
+DEFINE FIELD IF NOT EXISTS language           ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS pageCount          ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS industryCodeRaw    ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS gicsCode           ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS gicsSector         ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS industryConfidence ON TABLE exchange_filing TYPE option<float>;
+DEFINE FIELD IF NOT EXISTS xbrlCurrency       ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS xbrlProvenance     ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS xbrlSource         ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS documentChunks        ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS xbrlFacts             ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS metadataSources      ON TABLE exchange_filing TYPE option<string>;
@@ -248,6 +260,9 @@ DEFINE INDEX IF NOT EXISTS idx_ef_type      ON TABLE exchange_filing COLUMNS fil
 DEFINE INDEX IF NOT EXISTS idx_ef_source    ON TABLE exchange_filing COLUMNS source;
 DEFINE INDEX IF NOT EXISTS idx_ef_docstatus ON TABLE exchange_filing COLUMNS documentStatus;
 DEFINE INDEX IF NOT EXISTS idx_ef_category  ON TABLE exchange_filing COLUMNS filingCategory;
+DEFINE INDEX IF NOT EXISTS idx_ef_periodEnd   ON TABLE exchange_filing COLUMNS periodEndDate;
+DEFINE INDEX IF NOT EXISTS idx_ef_gicsCode    ON TABLE exchange_filing COLUMNS gicsCode;
+DEFINE INDEX IF NOT EXISTS idx_ef_gicsSector  ON TABLE exchange_filing COLUMNS gicsSector;
 """
     if COMPANY_TABLE:
         base += f"""
