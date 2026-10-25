@@ -59,17 +59,56 @@ def extract_filing_metadata(html_content: str) -> dict[str, Any]:
     if company_name:
         set_field_candidate(candidates, "stockName", company_name, "html_ixbrl", 0.92)
 
-    filing_date = _ixbrl_value(soup, "DocumentPeriodEndDate")
-    if filing_date:
-        parsed_date = _normalize_html_date(filing_date)
-        if parsed_date:
+    period_end_raw = _ixbrl_value(soup, "DocumentPeriodEndDate")
+    parsed_period_end = None
+    if period_end_raw:
+        parsed_period_end = _normalize_html_date(period_end_raw)
+        if parsed_period_end:
             set_field_candidate(
-                candidates, "filingDate", parsed_date, "html_ixbrl", 0.94
+                candidates,
+                "periodEndDate",
+                parsed_period_end,
+                "html_ixbrl",
+                0.94,
+            )
+            set_field_candidate(
+                candidates,
+                "filingDate",
+                parsed_period_end,
+                "html_ixbrl",
+                0.94,
             )
 
-    filing_type = _ixbrl_value(soup, "DocumentType")
-    if filing_type:
-        set_field_candidate(candidates, "filingType", filing_type, "html_ixbrl", 0.93)
+    fiscal_year_end_raw = _ixbrl_value(soup, "CurrentFiscalYearEndDate")
+    if fiscal_year_end_raw:
+        match = re.match(r"^-?-?(\d{2})-?(\d{2})$", fiscal_year_end_raw.strip())
+        if match:
+            month = int(match.group(1))
+            if 1 <= month <= 12:
+                set_field_candidate(
+                    candidates,
+                    "fiscalYearEndMonth",
+                    str(month),
+                    "html_ixbrl",
+                    0.92,
+                )
+    if not candidates.get("fiscalYearEndMonth") and parsed_period_end:
+        try:
+            month = int(parsed_period_end.split("-")[1])
+            if 1 <= month <= 12:
+                set_field_candidate(
+                    candidates,
+                    "fiscalYearEndMonth",
+                    str(month),
+                    "derived_from_periodEndDate",
+                    0.75,
+                )
+        except (ValueError, IndexError):
+            pass
+
+    doc_type = _ixbrl_value(soup, "DocumentType")
+    if doc_type:
+        set_field_candidate(candidates, "filingType", doc_type, "html_ixbrl", 0.93)
 
     cik = _ixbrl_value(soup, "EntityCentralIndexKey")
     if cik:
@@ -93,6 +132,13 @@ def extract_filing_metadata(html_content: str) -> dict[str, Any]:
     result.setdefault("filingType", None)
     result.setdefault("exchange", None)
     result.setdefault("cik", None)
+    result["isAmendment"] = (
+        (doc_type.upper().endswith("/A") or "AMEND" in doc_type.upper())
+        if doc_type
+        else False
+    )
+    if "fiscalYearEndMonth" in result:
+        result["fiscalYearEndMonth"] = int(result["fiscalYearEndMonth"])
     return result
 
 
@@ -165,7 +211,7 @@ def extract_text_from_html(html_content: str) -> str:
     for tag in soup.find_all(
         style=re.compile(
             r"display\s*:\s*none|visibility\s*:\s*hidden",
-            re.I,
+            re.IGNORECASE,
         )
     ):
         tag.decompose()

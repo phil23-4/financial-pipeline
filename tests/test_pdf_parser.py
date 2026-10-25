@@ -4,7 +4,12 @@ from unittest.mock import patch
 
 from fin_pipeline.models.schemas import ExchangeFilingModel
 from fin_pipeline.utils.metadata import extract_metadata_from_text
-from fin_pipeline.utils.pdf_parser import _camelot_tables, parse_pdf_layout
+from fin_pipeline.utils.pdf_parser import (
+    _camelot_tables,
+    _detect_language,
+    extract_filing_metadata,
+    parse_pdf_layout,
+)
 
 
 def test_camelot_tables_uses_parsing_report_accuracy():
@@ -226,7 +231,7 @@ def test_pdf_parser_extracts_company_name_from_document_title_metadata():
 
 
 def test_pdf_parser_returns_metadata_without_tables():
-    document = SimpleNamespace(metadata={})
+    document = SimpleNamespace(metadata={}, page_count=3)
     with (
         patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
         patch(
@@ -245,10 +250,77 @@ def test_pdf_parser_returns_metadata_without_tables():
     assert result["tables"] == []
     assert result["table_cnt"] == 0
     assert result["filingType"] == "Annual Report"
+    assert result["page_count"] == 3
     assert result["warnings"] == []
     assert result["chunks"][0]["pageNumber"] > 0
     assert result["chunks"][0]["chunkIndex"] == 0
     open_pdf.assert_called_once_with("report.pdf")
+
+
+def test_pdf_parser_detects_english_and_returns_page_count():
+    document = SimpleNamespace(metadata={}, page_count=3)
+    english_text = (
+        "The company reports strong financial results across its global markets. "
+        "Revenue increased during the year, while operating costs remained stable. "
+    ) * 8
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            return_value=[{"text": english_text}],
+        ),
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables", return_value=[]),
+        patch(
+            "fin_pipeline.utils.pdf_parser.extract_filing_metadata",
+            return_value={},
+        ),
+    ):
+        open_pdf.return_value.__enter__.return_value = document
+        result = parse_pdf_layout("report.pdf", use_ocr=False)
+
+    assert result["page_count"] == 3
+    assert result["language"] == "en"
+
+
+def test_pdf_parser_period_end_and_fiscal_month_from_filing_date():
+    document = SimpleNamespace(metadata={}, page_count=1)
+    with (
+        patch("fin_pipeline.utils.pdf_parser.pymupdf.open") as open_pdf,
+        patch(
+            "fin_pipeline.utils.pdf_parser.pymupdf4llm.to_markdown",
+            return_value=[{"text": "Annual report text"}],
+        ),
+        patch("fin_pipeline.utils.pdf_parser._camelot_tables", return_value=[]),
+        patch(
+            "fin_pipeline.utils.pdf_parser.extract_filing_metadata",
+            return_value={"filingDate": "2023-12-31"},
+        ),
+    ):
+        open_pdf.return_value.__enter__.return_value = document
+        result = parse_pdf_layout("report.pdf", use_ocr=False)
+
+    assert result["periodEndDate"] == "2023-12-31"
+    assert result["fiscalYearEndMonth"] == 12
+
+
+def test_pdf_parser_detects_amendment_from_filing_type():
+    with patch(
+        "fin_pipeline.utils.pdf_parser.extract_metadata_from_text",
+        return_value={"filingType": "10-K/A"},
+    ):
+        amendment = extract_filing_metadata("Annual report")
+    with patch(
+        "fin_pipeline.utils.pdf_parser.extract_metadata_from_text",
+        return_value={"filingType": "ANNUAL_REPORT"},
+    ):
+        annual_report = extract_filing_metadata("Annual report")
+
+    assert amendment["isAmendment"] is True
+    assert annual_report["isAmendment"] is False
+
+
+def test_pdf_language_detection_returns_none_for_short_text():
+    assert _detect_language("Too short to classify") is None
 
 
 def test_pdf_parser_passes_force_ocr_and_native_callback():

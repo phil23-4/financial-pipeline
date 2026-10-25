@@ -1,3 +1,4 @@
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +12,7 @@ from fin_pipeline.sec_edgar import (
     _classify_exhibit_by_content,
     _fetch_filing_html,
     _get_40f_exhibit_content,
+    _parse_fy_end_month,
     read_company_csv,
     stream_filings_from_csv,
 )
@@ -75,6 +77,92 @@ def test_stream_filters_override_csv_filters(tmp_path, monkeypatch):
     assert results[0][1]["filingId"] == "sec_AAPL_0000320193-25-000079"
     assert results[0][1]["sourceType"] == "structured_filing"
     assert results[0][1]["reportingYear"] == 2025
+    assert results[0][1]["periodEndDate"] == "2025-09-27"
+    assert results[0][1]["fiscalYearEndMonth"] == 9
+    assert results[0][1]["isAmendment"] is False
+    assert results[0][1]["language"] == "en"
+    assert results[0][1]["pageCount"] is None
+
+
+def test_stream_includes_fiscal_end_amendment_and_csv_industry(tmp_path, monkeypatch):
+    csv_path = tmp_path / "companies.csv"
+    csv_path.write_text("ticker,Industry\nTEST,Banking\n")
+    filing = SimpleNamespace(
+        accession_no="0000000001-24-000001",
+        html=lambda: "<html>filing</html>",
+        form="10-K/A",
+        company="Test Company",
+        report_date=date(2023, 12, 31),
+        filing_date=date(2024, 2, 1),
+        fiscal_year_end="1231",
+        cik=1,
+    )
+    company = MagicMock()
+    company.get_ticker.return_value = "TEST"
+    company.get_filings.return_value = [filing]
+    fake_edgar = SimpleNamespace(
+        Company=MagicMock(return_value=company),
+        set_identity=MagicMock(),
+    )
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
+
+    with patch.dict("sys.modules", {"edgar": fake_edgar}):
+        results = list(stream_filings_from_csv(str(csv_path)))
+
+    metadata = results[0][1]
+    assert metadata["periodEndDate"] == "2023-12-31"
+    assert metadata["fiscalYearEndMonth"] == 12
+    assert metadata["isAmendment"] is True
+    assert metadata["language"] == "en"
+    assert metadata["pageCount"] is None
+    assert metadata["industryCodeRaw"] == "Banking"
+
+
+def test_stream_derives_fiscal_year_end_month_from_report_date(tmp_path, monkeypatch):
+    csv_path = tmp_path / "companies.csv"
+    csv_path.write_text("ticker\nTEST\n")
+    filing = SimpleNamespace(
+        accession_no="0000000001-24-000001",
+        html=lambda: "<html>filing</html>",
+        form="10-K",
+        company="Test Company",
+        report_date=date(2024, 3, 31),
+        filing_date=date(2024, 5, 1),
+        fiscal_year_end=None,
+        cik=1,
+    )
+    company = MagicMock()
+    company.get_ticker.return_value = "TEST"
+    company.get_filings.return_value = [filing]
+    fake_edgar = SimpleNamespace(
+        Company=MagicMock(return_value=company),
+        set_identity=MagicMock(),
+    )
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
+
+    with patch.dict("sys.modules", {"edgar": fake_edgar}):
+        results = list(stream_filings_from_csv(str(csv_path)))
+
+    assert results[0][1]["fiscalYearEndMonth"] == 3
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1231", 12),
+        ("12-31", 12),
+        ("--12-31", 12),
+        ("12/31", 12),
+        ("December 31", 12),
+        ("December", 12),
+        ("Dec", 12),
+        (None, None),
+        ("", None),
+        ("garbage", None),
+    ],
+)
+def test_parse_fy_end_month_formats(value, expected):
+    assert _parse_fy_end_month(value) == expected
 
 
 def test_stream_retries_timeout_while_loading_filings(tmp_path, monkeypatch):

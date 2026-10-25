@@ -48,6 +48,11 @@ class PdfParseResult(TypedDict, total=False):
     sedol: str | None
     metadataSources: dict[str, str]
     metadataConfidence: dict[str, float]
+    periodEndDate: str | None
+    fiscalYearEndMonth: int | None
+    isAmendment: bool
+    language: str | None
+    page_count: int | None
 
 
 def _extract_pdf_metadata_from_properties(
@@ -257,7 +262,35 @@ def extract_filing_metadata(
         result["metadataSources"] = metadata_sources
         result["metadataConfidence"] = metadata_confidence
 
+    if result.get("filingDate") and len(str(result["filingDate"])) >= 10:
+        result["periodEndDate"] = str(result["filingDate"])[:10]
+    else:
+        result["periodEndDate"] = None
+    period_end = result.get("periodEndDate")
+    if period_end:
+        try:
+            result["fiscalYearEndMonth"] = int(period_end.split("-")[1])
+        except (ValueError, IndexError):
+            result["fiscalYearEndMonth"] = None
+    else:
+        result["fiscalYearEndMonth"] = None
+    form_type = str(result.get("filingType", "")).upper()
+    result["isAmendment"] = form_type.endswith("/A") or "AMEND" in form_type
+
     return result
+
+
+def _detect_language(text: str) -> str | None:
+    """Detect an ISO 639-1 language code from sufficiently long text."""
+    if not text or len(text) < 200:
+        return None
+    try:
+        from langdetect import DetectorFactory, detect
+
+        DetectorFactory.seed = 42
+        return detect(text[:5000])
+    except Exception:  # noqa: BLE001 - detection failures should not fail PDF parsing
+        return None
 
 
 def _clean_markdown_pages(page_texts: Iterable[str]) -> list[str]:
@@ -505,6 +538,7 @@ def parse_pdf_layout(
         else "PyMuPDF4LLM (OCR disabled)"
     )
     with pymupdf.open(file_path) as doc:
+        page_count = getattr(doc, "page_count", None)
         try:
             page_chunks = pymupdf4llm.to_markdown(
                 doc,
@@ -584,6 +618,17 @@ def parse_pdf_layout(
         metadata = extract_filing_metadata(
             text, doc, company_text="\n".join(page_texts[:3])
         )
+        if not metadata.get("periodEndDate") and metadata.get("filingDate"):
+            metadata["periodEndDate"] = str(metadata["filingDate"])[:10]
+        if not metadata.get("fiscalYearEndMonth") and metadata.get("periodEndDate"):
+            try:
+                metadata["fiscalYearEndMonth"] = int(
+                    str(metadata["periodEndDate"]).split("-")[1]
+                )
+            except (ValueError, IndexError):
+                pass
+        form_type = str(metadata.get("filingType", "")).upper()
+        metadata["isAmendment"] = form_type.endswith("/A") or "AMEND" in form_type
 
     if not text:
         warnings.append("No usable text was extracted from the PDF")
@@ -599,6 +644,8 @@ def parse_pdf_layout(
         "table_cnt": len(tables),
         "reason": extraction_reason,
         "warnings": warnings,
+        "page_count": page_count,
+        "language": _detect_language(text),
         **metadata,
     }
     return result

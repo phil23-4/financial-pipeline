@@ -6,6 +6,7 @@ import csv
 import html as html_module
 import json
 import os
+import re
 import time
 from collections.abc import Callable, Iterator
 from datetime import date, datetime
@@ -221,6 +222,61 @@ def _max_filings(row: dict) -> int | None:
     return int(value) if value else None
 
 
+def _parse_fy_end_month(value: object | None) -> int | None:
+    """Parse a fiscal year-end month from dates, numeric formats, or month names."""
+    if value is None:
+        return None
+    if isinstance(value, (date, datetime)):
+        return value.month
+    if isinstance(value, int) and 1 <= value <= 12:
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10]).month
+    except ValueError:
+        pass
+
+    numeric_match = re.fullmatch(r"(?:--?)?(\d{1,2})[-/]?(\d{1,2})", text)
+    if numeric_match:
+        month = int(numeric_match.group(1))
+        if 1 <= month <= 12:
+            return month
+
+    month_names = {
+        "january": 1,
+        "february": 2,
+        "march": 3,
+        "april": 4,
+        "may": 5,
+        "june": 6,
+        "july": 7,
+        "august": 8,
+        "september": 9,
+        "october": 10,
+        "november": 11,
+        "december": 12,
+        "jan": 1,
+        "feb": 2,
+        "mar": 3,
+        "apr": 4,
+        "jun": 6,
+        "jul": 7,
+        "aug": 8,
+        "sep": 9,
+        "sept": 9,
+        "oct": 10,
+        "nov": 11,
+        "dec": 12,
+    }
+    month_match = re.match(r"^([a-z]+)", text.lower())
+    if month_match:
+        return month_names.get(month_match.group(1))
+    return None
+
+
 def _stream_filings_from_csv(
     csv_path: str,
     year_range: tuple[int, int] | None = None,
@@ -266,7 +322,7 @@ def _stream_filings_from_csv(
                 ),
                 f"filings lookup for {identifier}",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - skip failed companies and continue
             log.error(
                 f"Skipping {identifier}: filings lookup failed after "
                 f"retries ({type(exc).__name__}: {exc}); continuing"
@@ -301,7 +357,7 @@ def _stream_filings_from_csv(
                             f"Skipping {filing.accession_no}: no HTML primary document"
                         )
                         continue
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - skip failed filings and continue
                 log.error(
                     f"Skipping {filing.accession_no} ({ticker}): html retrieval failed "
                     f"({type(exc).__name__}: {exc})"
@@ -316,6 +372,13 @@ def _stream_filings_from_csv(
                 reporting_year = date.fromisoformat(str(report_date)[:10]).year
             else:
                 reporting_year = None
+            period_end_date = str(report_date) if report_date else None
+            fiscal_year_end_month = _parse_fy_end_month(
+                getattr(filing, "fiscal_year_end", None)
+            )
+            if fiscal_year_end_month is None and period_end_date:
+                fiscal_year_end_month = _parse_fy_end_month(period_end_date)
+            form_upper = str(filing.form).upper()
             metadata = {
                 "filingId": f"sec_{ticker.upper()}_{accession}",
                 "companyTicker": ticker.upper(),
@@ -330,6 +393,12 @@ def _stream_filings_from_csv(
                 "reportingYear": reporting_year,
                 "stockName": filing.company,
                 "filingDate": report_date or filing.filing_date,
+                "periodEndDate": period_end_date,
+                "fiscalYearEndMonth": fiscal_year_end_month,
+                "isAmendment": (form_upper.endswith("/A") or "AMEND" in form_upper),
+                "language": "en",
+                "pageCount": None,
+                "industryCodeRaw": row.get("industry"),
                 "referencedTickers": [],
                 "cik": str(filing.cik).zfill(10),
                 "exhibitSectionMap": json.dumps(section_map) if section_map else None,

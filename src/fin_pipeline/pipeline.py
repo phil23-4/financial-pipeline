@@ -19,6 +19,7 @@ from fin_pipeline.crawler import scan_directory, scan_documents
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.db.relations import establish_graph_relations
 from fin_pipeline.models.schemas import ExchangeFilingModel
+from fin_pipeline.utils.classify import classify_source_type
 from fin_pipeline.utils.crypto import calculate_file_hash
 from fin_pipeline.utils.html_parser import (
     enrich_filing_metadata_with_edgartools,
@@ -32,6 +33,14 @@ from fin_pipeline.utils.sections import (
 )
 
 _xbrl_bulk_cache: dict[tuple[str, str], Any] | None = None
+
+
+def _ensure_source_type(payload: dict) -> None:
+    source_type = payload.get("sourceType")
+    if source_type is None or (
+        isinstance(source_type, str) and source_type.lower() == "unknown"
+    ):
+        payload["sourceType"] = classify_source_type(payload.get("filingType"))
 
 
 def _fallback_filing_id(file_path: str) -> str:
@@ -126,6 +135,54 @@ def _read_html_content(file_path: str) -> str:
         return source.read()
 
 
+def _apply_extracted_metadata(parsed: dict, payload: dict) -> None:
+    period_end_date = parsed.get("periodEndDate") or payload.get("periodEndDate")
+    metadata_sources = payload.get("metadataSources")
+    filename_date = (
+        payload.get("documentType") == FILE_TYPE_PDF.upper()
+        and isinstance(metadata_sources, dict)
+        and metadata_sources.get("filingDate") == "filename_year_inferred"
+    )
+    if filename_date or (
+        not period_end_date
+        and payload.get("documentType") == FILE_TYPE_PDF.upper()
+        and payload.get("filingDate")
+    ):
+        filing_date = str(payload["filingDate"])
+        if len(filing_date) >= 10:
+            period_end_date = filing_date[:10]
+    payload["periodEndDate"] = period_end_date
+
+    fiscal_year_end_month = payload.get("fiscalYearEndMonth")
+    if not filename_date and fiscal_year_end_month is None:
+        fiscal_year_end_month = parsed.get("fiscalYearEndMonth")
+    if fiscal_year_end_month is None and period_end_date:
+        try:
+            fiscal_year_end_month = int(str(period_end_date).split("-")[1])
+        except (ValueError, IndexError):
+            pass
+    payload["fiscalYearEndMonth"] = fiscal_year_end_month
+
+    filing_type = str(payload.get("filingType", "")).upper()
+    payload["isAmendment"] = (
+        parsed.get("isAmendment", False)
+        or payload.get("isAmendment", False)
+        or filing_type.endswith("/A")
+        or "AMEND" in filing_type
+    )
+    payload["language"] = (
+        parsed.get("language")
+        or payload.get("language")
+        or ("en" if payload.get("documentType") == FILE_TYPE_HTML.upper() else None)
+    )
+    payload["pageCount"] = (
+        parsed.get("page_count") or parsed.get("pageCount") or payload.get("pageCount")
+    )
+    payload["industryCodeRaw"] = payload.get("industryCodeRaw") or parsed.get(
+        "industryCodeRaw"
+    )
+
+
 def detect_file_type(file_path: str) -> str:
     """Detect file type based on extension.
 
@@ -213,6 +270,7 @@ async def run_ingestion_pipeline(
         "filingId": filing_id,
         "source": source.upper(),
     }
+    _ensure_source_type(payload)
     payload["periodEndDate"] = metadata_input.get("periodEndDate")
     payload["fiscalYearEndMonth"] = metadata_input.get("fiscalYearEndMonth")
     payload["isAmendment"] = metadata_input.get("isAmendment", False)
@@ -278,6 +336,7 @@ async def run_ingestion_pipeline(
                     "documentType": detect_file_type(file_path).upper(),
                 }
             )
+            _apply_extracted_metadata(parsed, payload)
             metadata_sources = parsed.get("metadataSources")
             if metadata_sources:
                 payload["metadataSources"] = metadata_sources
@@ -289,6 +348,7 @@ async def run_ingestion_pipeline(
                 if parsed.get(metadata_key) and existing_value in (None, "", "UNKNOWN"):
                     payload[metadata_key] = parsed[metadata_key]
 
+            _ensure_source_type(payload)
             if detect_file_type(file_path) == FILE_TYPE_HTML:
                 _populate_xbrl_fields(payload)
 
@@ -393,6 +453,7 @@ async def run_html_content_pipeline(
         "filingId": filing_id,
         "source": source.upper(),
     }
+    _ensure_source_type(payload)
     payload["periodEndDate"] = metadata_input.get("periodEndDate")
     payload["fiscalYearEndMonth"] = metadata_input.get("fiscalYearEndMonth")
     payload["isAmendment"] = metadata_input.get("isAmendment", False)
@@ -433,6 +494,7 @@ async def run_html_content_pipeline(
                 "documentType": "HTML",
             }
         )
+        _apply_extracted_metadata(parsed, payload)
         _populate_xbrl_fields(payload)
         if metadata_input.get("exhibitSectionMap"):
             payload["exhibitSectionMap"] = metadata_input["exhibitSectionMap"]
@@ -449,6 +511,7 @@ async def run_html_content_pipeline(
                 "UNKNOWN",
             ):
                 payload[metadata_key] = parsed[metadata_key]
+        _ensure_source_type(payload)
         if isinstance(payload.get("metadataSources"), dict):
             payload["metadataSources"] = json.dumps(
                 payload["metadataSources"], ensure_ascii=False

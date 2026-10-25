@@ -18,6 +18,7 @@ from fin_pipeline.pipeline import (
     run_ingestion_pipeline,
 )
 from fin_pipeline.sec_edgar import SecEdgarFetchError
+from fin_pipeline.utils.classify import classify_source_type
 from fin_pipeline.utils.html_parser import (
     enrich_filing_metadata_with_edgartools,
     extract_filing_metadata,
@@ -25,6 +26,18 @@ from fin_pipeline.utils.html_parser import (
     parse_html_content,
 )
 from fin_pipeline.utils.xbrl_facts import extract_xbrl_facts
+
+
+def test_classify_source_type():
+    assert classify_source_type("Annual") == "glossy_report"
+    assert classify_source_type("ANNUAL_REPORT") == "glossy_report"
+    assert classify_source_type("10-K") == "structured_filing"
+    assert classify_source_type("20-F") == "structured_filing"
+    assert classify_source_type("40-F") == "structured_filing"
+    assert classify_source_type("10-K/A") == "structured_filing"
+    assert classify_source_type("weird") == "unknown"
+    assert classify_source_type(None) == "unknown"
+    assert classify_source_type("") == "unknown"
 
 
 def test_edgar_metadata_enrichment_retries_timeout_and_preserves_fallback(
@@ -129,6 +142,41 @@ async def test_successful_pipeline_ingestion(
 
     # Verify graph edge constructor call was dispatched safely
     mock_graph_rel.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("fin_pipeline.pipeline.parse_document")
+@patch("fin_pipeline.pipeline.SurrealConnection")
+@patch("fin_pipeline.pipeline.establish_graph_relations", new_callable=AsyncMock)
+async def test_pipeline_derives_source_type_when_missing(
+    mock_graph_rel, mock_surreal_conn, mock_parse_document, sample_pdf_path
+):
+    mock_parse_document.return_value = {
+        "text": "Annual report",
+        "chunks": [],
+        "tables": [],
+        "table_cnt": 0,
+        "reason": "Digital Native",
+    }
+    mock_db = AsyncMock()
+    mock_surreal_conn.return_value.__aenter__.return_value = mock_db
+
+    completed = await run_ingestion_pipeline(
+        {
+            "filingId": "annual_report",
+            "companyTicker": "XYZ",
+            "stockCode": "9999",
+            "exchange": "LSE",
+            "filingType": "ANNUAL_REPORT",
+            "sourceType": None,
+        },
+        sample_pdf_path,
+        source="LOCAL",
+    )
+
+    assert completed is True
+    assert mock_db.upsert.call_args.args[1]["sourceType"] == "glossy_report"
+    mock_graph_rel.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -274,6 +322,7 @@ async def test_html_pipeline_generates_filing_id_when_missing(
     filing_id = mock_db.upsert.call_args.args[1]["filingId"]
     assert filing_id.startswith("html_")
     assert filing_id != "UNKNOWN_ID"
+    assert mock_db.upsert.call_args.args[1]["sourceType"] == "structured_filing"
     mock_graph_rel.assert_awaited_once()
 
 
@@ -382,11 +431,29 @@ def test_extract_filing_metadata_from_inline_xbrl():
     result = extract_filing_metadata(html)
     assert result["stockName"] == "Bank of America Corporation"
     assert result["filingDate"] == "2021-12-31"
+    assert result["periodEndDate"] == "2021-12-31"
     assert result["filingType"] == "10-K"
+    assert result["fiscalYearEndMonth"] == 12
+    assert result["isAmendment"] is False
     assert result["exchange"] is None
     assert result["cik"] is None
     assert result["metadataSources"]["stockName"] == "html_ixbrl"
     assert result["metadataConfidence"]["filingDate"] >= 0.9
+
+
+def test_extract_filing_metadata_parses_fiscal_year_end_and_amendment():
+    html = """
+    <ix:nonNumeric name="dei:DocumentPeriodEndDate">2024-03-31</ix:nonNumeric>
+    <ix:nonNumeric name="dei:CurrentFiscalYearEndDate">--03-31</ix:nonNumeric>
+    <ix:nonNumeric name="dei:DocumentType">10-K/A</ix:nonNumeric>
+    """
+
+    result = extract_filing_metadata(html)
+
+    assert result["periodEndDate"] == "2024-03-31"
+    assert result["filingDate"] == "2024-03-31"
+    assert result["fiscalYearEndMonth"] == 3
+    assert result["isAmendment"] is True
 
 
 def test_html_text_excludes_xbrl_header():
@@ -498,7 +565,12 @@ async def test_html_content_pipeline_ingests_without_file(
 
 
 async def _run_schema_placeholder_ingestion(
-    metadata, tmp_path, monkeypatch, route, include_xbrl=False
+    metadata,
+    tmp_path,
+    monkeypatch,
+    route,
+    include_xbrl=False,
+    parsed_result=None,
 ):
     db = AsyncMock()
     connection_context = AsyncMock()
@@ -512,7 +584,7 @@ async def _run_schema_placeholder_ingestion(
         "fin_pipeline.pipeline.establish_graph_relations",
         AsyncMock(),
     )
-    parsed = {
+    parsed = parsed_result or {
         "text": "Test filing",
         "chunks": [],
         "tables": [],
@@ -552,11 +624,12 @@ async def _run_schema_placeholder_ingestion(
         "fin_pipeline.pipeline._load_xbrl_bulk_cache",
         lambda: cache,
     )
-    if route == "file":
-        html_path = tmp_path / "placeholder.html"
-        html_path.write_text("<html><body>Test filing</body></html>")
+    if route in {"file", "pdf"}:
+        extension = "pdf" if route == "pdf" else "html"
+        document_path = tmp_path / f"placeholder.{extension}"
+        document_path.write_text("<html><body>Test filing</body></html>")
         completed = await run_ingestion_pipeline(
-            metadata, str(html_path), source="SEC", ocr_enabled=False
+            metadata, str(document_path), source="SEC", ocr_enabled=False
         )
     else:
         completed = await run_html_content_pipeline(
@@ -587,7 +660,6 @@ async def test_new_fields_default_to_none(tmp_path, monkeypatch, route):
     for field in (
         "periodEndDate",
         "fiscalYearEndMonth",
-        "language",
         "pageCount",
         "industryCodeRaw",
         "gicsCode",
@@ -597,6 +669,7 @@ async def test_new_fields_default_to_none(tmp_path, monkeypatch, route):
         "xbrlProvenance",
     ):
         assert record[field] is None
+    assert record["language"] == "en"
     assert record["xbrlSource"] == "none"
     assert record["isAmendment"] is False
 
@@ -670,6 +743,138 @@ async def test_period_end_date_validator_appends_time(tmp_path, monkeypatch):
     )
 
     assert record["periodEndDate"] == "2023-12-31T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_html_pipeline_uses_parsed_period_end_and_language_default(
+    tmp_path, monkeypatch
+):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "html_period_end",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+        parsed_result={
+            "text": "Test filing",
+            "chunks": [],
+            "tables": [],
+            "table_cnt": 0,
+            "reason": "test",
+            "periodEndDate": "2023-12-31",
+        },
+    )
+
+    assert record["periodEndDate"] == "2023-12-31T00:00:00Z"
+    assert record["fiscalYearEndMonth"] == 12
+    assert record["language"] == "en"
+
+
+@pytest.mark.asyncio
+async def test_pdf_pipeline_uses_page_count_and_detected_language(
+    tmp_path, monkeypatch
+):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "pdf_metadata",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "ANNUAL_REPORT",
+            "filingDate": "2024-03-31",
+        },
+        tmp_path,
+        monkeypatch,
+        "pdf",
+        parsed_result={
+            "text": "Test filing",
+            "chunks": [],
+            "tables": [],
+            "table_cnt": 0,
+            "reason": "test",
+            "page_count": 215,
+            "language": "ja",
+        },
+    )
+
+    assert record["pageCount"] == 215
+    assert record["language"] == "ja"
+    assert record["periodEndDate"] == "2024-03-31T00:00:00Z"
+    assert record["fiscalYearEndMonth"] == 3
+
+
+@pytest.mark.asyncio
+async def test_pdf_filename_date_is_used_for_period_end(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "pdf_filename_period",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "ANNUAL_REPORT",
+            "filingDate": "2024-12-31",
+            "metadataSources": {"filingDate": "filename_year_inferred"},
+        },
+        tmp_path,
+        monkeypatch,
+        "pdf",
+        parsed_result={
+            "text": "Test filing",
+            "chunks": [],
+            "tables": [],
+            "table_cnt": 0,
+            "reason": "test",
+            "periodEndDate": "2024-03-31",
+            "fiscalYearEndMonth": 3,
+        },
+    )
+
+    assert record["periodEndDate"] == "2024-12-31T00:00:00Z"
+    assert record["fiscalYearEndMonth"] == 12
+
+
+@pytest.mark.asyncio
+async def test_industry_and_amendment_metadata_persist(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "html_metadata_input",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K/A",
+            "industryCodeRaw": "IT Software & Services",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+    )
+
+    assert record["industryCodeRaw"] == "IT Software & Services"
+    assert record["isAmendment"] is True
+
+
+@pytest.mark.asyncio
+async def test_missing_pdf_language_remains_none(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "pdf_missing_language",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "ANNUAL_REPORT",
+        },
+        tmp_path,
+        monkeypatch,
+        "pdf",
+    )
+
+    assert record["language"] is None
+    assert record["isAmendment"] is False
 
 
 @pytest.mark.asyncio
@@ -909,7 +1114,8 @@ async def test_pipeline_serializes_chunks_as_json_string(
             "companyTicker": "XYZ",
             "stockCode": "9999",
             "exchange": "LSE",
-            "filingType": "10-K",
+            "filingType": "OTHER",
+            "sourceType": "unknown",
         },
         sample_pdf_path,
         source="SEC",

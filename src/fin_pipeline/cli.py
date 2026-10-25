@@ -18,6 +18,10 @@ from fin_pipeline.pipeline import (
     process_sec_edgar_html_directory,
     run_ingestion_pipeline,
 )
+from fin_pipeline.utils.classify import (
+    classify_source_type,
+    normalize_filing_type,
+)
 from fin_pipeline.utils.xbrl_bulk import (
     download_companyfacts,
     download_fsds_range,
@@ -221,6 +225,7 @@ def file(
     dry_run: bool,
 ):
     """Ingest a single explicit file (PDF or HTML) with provided structured metadata."""
+    filing_type = normalize_filing_type(filing_type)
     metadata = {
         "filingId": filing_id,
         "companyTicker": ticker,
@@ -228,6 +233,7 @@ def file(
         "stockCode": stock_code,
         "exchange": exchange,
         "filingType": filing_type,
+        "sourceType": classify_source_type(filing_type),
     }
     click.echo(f"📥 Processing individual file: {os.path.basename(file_path)}")
     completed = asyncio.run(

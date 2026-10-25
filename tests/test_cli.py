@@ -5,6 +5,15 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from fin_pipeline.cli import main
+from fin_pipeline.utils.classify import normalize_filing_type
+
+
+def test_normalize_filing_type_annual():
+    assert normalize_filing_type("Annual") == "ANNUAL_REPORT"
+    assert normalize_filing_type("annual") == "ANNUAL_REPORT"
+    assert normalize_filing_type("AR") == "ANNUAL_REPORT"
+    assert normalize_filing_type("10-K") == "10-K"
+    assert normalize_filing_type("Annual Report") == "ANNUAL_REPORT"
 
 
 def test_file_command_passes_stock_name_to_ingestion(tmp_path):
@@ -41,6 +50,81 @@ def test_file_command_passes_stock_name_to_ingestion(tmp_path):
     assert metadata["companyTicker"] == "TLV"
     assert run_pipeline.call_args.kwargs["source"] == "LOCAL"
     assert run_pipeline.call_args.kwargs["ocr_enabled"] is False
+
+
+def test_file_command_sets_source_type_from_glossy_type(tmp_path):
+    document = tmp_path / "report.pdf"
+    document.write_bytes(b"%PDF-1.4")
+
+    with patch("fin_pipeline.cli.run_ingestion_pipeline", return_value=True) as run_pipeline:
+        result = CliRunner().invoke(
+            main,
+            [
+                "file",
+                str(document),
+                "--filing-id",
+                "local_report",
+                "--ticker",
+                "TLV",
+                "--type",
+                "Annual",
+            ],
+        )
+
+    assert result.exit_code == 0
+    metadata = run_pipeline.call_args.args[0]
+    assert metadata["filingType"] == "ANNUAL_REPORT"
+    assert metadata["sourceType"] == "glossy_report"
+
+
+def test_file_command_sets_source_type_from_structured_type(tmp_path):
+    document = tmp_path / "report.pdf"
+    document.write_bytes(b"%PDF-1.4")
+
+    with patch("fin_pipeline.cli.run_ingestion_pipeline", return_value=True) as run_pipeline:
+        result = CliRunner().invoke(
+            main,
+            [
+                "file",
+                str(document),
+                "--filing-id",
+                "local_report",
+                "--ticker",
+                "TLV",
+                "--type",
+                "10-K",
+            ],
+        )
+
+    assert result.exit_code == 0
+    metadata = run_pipeline.call_args.args[0]
+    assert metadata["filingType"] == "10-K"
+    assert metadata["sourceType"] == "structured_filing"
+
+
+def test_file_command_preserves_unknown_filing_type(tmp_path):
+    document = tmp_path / "report.pdf"
+    document.write_bytes(b"%PDF-1.4")
+
+    with patch("fin_pipeline.cli.run_ingestion_pipeline", return_value=True) as run_pipeline:
+        result = CliRunner().invoke(
+            main,
+            [
+                "file",
+                str(document),
+                "--filing-id",
+                "local_report",
+                "--ticker",
+                "TLV",
+                "--type",
+                "weird_custom_type",
+            ],
+        )
+
+    assert result.exit_code == 0
+    metadata = run_pipeline.call_args.args[0]
+    assert metadata["filingType"] == "weird_custom_type"
+    assert metadata["sourceType"] == "unknown"
 
 
 def test_file_command_requires_filing_type(tmp_path):
