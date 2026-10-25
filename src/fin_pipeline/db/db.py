@@ -208,6 +208,11 @@ DEFINE TABLE IF NOT EXISTS exchange_filing SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS filingId       ON TABLE exchange_filing TYPE string;
 DEFINE FIELD IF NOT EXISTS companyTicker  ON TABLE exchange_filing TYPE string;
 DEFINE FIELD IF NOT EXISTS stockCode      ON TABLE exchange_filing TYPE string;
+DEFINE FIELD IF NOT EXISTS cik            ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS lei            ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS isin           ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS cusip          ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS sedol          ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS stockName      ON TABLE exchange_filing TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS exchange       ON TABLE exchange_filing TYPE string;
 DEFINE FIELD IF NOT EXISTS filingType     ON TABLE exchange_filing TYPE string;
@@ -254,6 +259,7 @@ DEFINE FIELD IF NOT EXISTS exhibitSectionMap   ON TABLE exchange_filing TYPE opt
 
 -- Indexes
 DEFINE INDEX IF NOT EXISTS idx_ef_ticker    ON TABLE exchange_filing COLUMNS companyTicker;
+DEFINE INDEX IF NOT EXISTS idx_ef_cik       ON TABLE exchange_filing COLUMNS cik;
 DEFINE INDEX IF NOT EXISTS idx_ef_stockcode ON TABLE exchange_filing COLUMNS stockCode;
 DEFINE INDEX IF NOT EXISTS idx_ef_date      ON TABLE exchange_filing COLUMNS filingDate;
 DEFINE INDEX IF NOT EXISTS idx_ef_type      ON TABLE exchange_filing COLUMNS filingType;

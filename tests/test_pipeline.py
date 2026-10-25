@@ -1181,3 +1181,131 @@ def test_http_delete_record_removes_stale_partial_data():
     mock_surreal_query.assert_called_once_with(
         "DELETE exchange_filing:⟨test⟩;", timeout=60
     )
+
+
+@pytest.mark.asyncio
+async def test_cik_persisted_from_metadata_input(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "cik-from-metadata",
+            "companyTicker": "AAPL",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+            "cik": "0000320193",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+    )
+
+    assert record["cik"] == "0000320193"
+
+
+@pytest.mark.asyncio
+async def test_cik_zero_padded(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "cik-zero-padded",
+            "companyTicker": "AAPL",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+            "cik": "320193",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+    )
+
+    assert record["cik"] == "0000320193"
+
+
+@pytest.mark.asyncio
+async def test_cik_propagated_from_parsed(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "cik-from-parser",
+            "companyTicker": "GOOG",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+        parsed_result={
+            "text": "Test filing",
+            "chunks": [],
+            "tables": [],
+            "table_cnt": 0,
+            "reason": "test",
+            "cik": "0001652044",
+        },
+    )
+
+    assert record["cik"] == "0001652044"
+
+
+@pytest.mark.asyncio
+async def test_cik_not_overwritten_by_parsed(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "cik-metadata-precedence",
+            "companyTicker": "AAPL",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+            "cik": "0000320193",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+        parsed_result={
+            "text": "Test filing",
+            "chunks": [],
+            "tables": [],
+            "table_cnt": 0,
+            "reason": "test",
+            "cik": "0000999999",
+        },
+    )
+
+    assert record["cik"] == "0000320193"
+
+
+@pytest.mark.asyncio
+async def test_cik_null_when_absent(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "cik-absent",
+            "companyTicker": "TEST",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+    )
+
+    assert record["cik"] is None
+
+
+@pytest.mark.asyncio
+async def test_cik_strips_non_digits(tmp_path, monkeypatch):
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "cik-strip-nondigits",
+            "companyTicker": "AAPL",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+            "cik": "CIK-0000320193",
+        },
+        tmp_path,
+        monkeypatch,
+        "html",
+    )
+
+    assert record["cik"] == "0000320193"

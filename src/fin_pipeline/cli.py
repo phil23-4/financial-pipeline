@@ -249,6 +249,112 @@ def file(
         click.echo("✨ Document registration sequence closed out.")
 
 
+@main.command("enrich")
+@click.option("--mapping", "-m", default="data/industry_mapping.csv", show_default=True, help="Path to the industry_mapping.csv file")
+@click.option("--dry-run", is_flag=True, help="Report what would change without writing to the database")
+@click.option("--limit", type=int, default=None, help="Limit records scanned (for testing)")
+@click.option("--skip-industry", is_flag=True, help="Skip GICS enrichment")
+@click.option("--skip-year", is_flag=True, help="Skip reportingYear backfill")
+@click.option("--backfill-cik", is_flag=True, help="Backfill missing CIKs from a company CSV")
+@click.option("--cik-csv", type=click.Path(exists=True, dir_okay=False), help="CSV with Ticker and CIK columns")
+@click.option("--diagnostic", is_flag=True, help="Print low-quality extraction counts (read-only)")
+def enrich(
+    mapping: str,
+    dry_run: bool,
+    limit: int | None,
+    skip_industry: bool,
+    skip_year: bool,
+    backfill_cik: bool,
+    cik_csv: str | None,
+    diagnostic: bool,
+):
+    """Post-ingestion enrichment pass for GICS fields and reportingYear."""
+    import asyncio
+
+    from fin_pipeline.db.connection import SurrealConnection
+    from fin_pipeline.enrichment import (
+        backfill_cik_from_csv,
+        backfill_reporting_year,
+        enrich_industry_codes,
+        load_industry_mapping,
+        log_low_quality_extractions,
+    )
+
+    mapping_data = None
+    if backfill_cik and not cik_csv:
+        raise click.UsageError("--cik-csv is required with --backfill-cik")
+    if not skip_industry:
+        try:
+            mapping_data = load_industry_mapping(mapping)
+            click.echo(
+                f"Loaded mapping: {mapping_data['row_count']} rows "
+                f"({len(mapping_data['warnings'])} warnings)"
+            )
+            for warning in mapping_data["warnings"][:10]:
+                click.echo(f"  ⚠️  {warning}", err=True)
+        except FileNotFoundError as exc:
+            click.echo(f"❌ {exc}", err=True)
+            raise click.exceptions.Exit(1)
+
+    async def _run():
+        async with SurrealConnection() as db:
+            if not skip_industry and mapping_data:
+                result = await enrich_industry_codes(
+                    db,
+                    mapping_path=mapping,
+                    dry_run=dry_run,
+                    limit=limit,
+                )
+                click.echo(
+                    f"\n📊 Industry enrichment{' (DRY RUN)' if dry_run else ''}:\n"
+                    f"  Scanned:   {result['scanned']}\n"
+                    f"  Matched:   {result['matched']}\n"
+                    f"  Updated:   {result['updated']}\n"
+                    f"  Unmatched: {result['unmatched']}\n"
+                    f"  By source: {result['by_source']}"
+                )
+                for sample in result.get("sample", []):
+                    click.echo(
+                        f"    {sample['filingId']}: {sample['before']} → {sample['after']}"
+                    )
+
+            if not skip_year:
+                result = await backfill_reporting_year(db, dry_run=dry_run)
+                click.echo(
+                    f"\n📅 reportingYear backfill{' (DRY RUN)' if dry_run else ''}:\n"
+                    f"  Scanned:   {result['scanned']}\n"
+                    f"  Derivable: {result['derivable']}\n"
+                    f"  Updated:   {result['updated']}\n"
+                    f"  Skipped:   {result['skipped']}"
+                )
+
+            if backfill_cik and cik_csv:
+                result = await backfill_cik_from_csv(
+                    db, cik_csv, dry_run=dry_run
+                )
+                click.echo(
+                    f"\n🏷️ CIK backfill{' (DRY RUN)' if dry_run else ''}:\n"
+                    f"  Scanned:   {result['scanned']}\n"
+                    f"  Matched:   {result['matched']}\n"
+                    f"  Updated:   {result['updated']}"
+                )
+
+            if diagnostic:
+                result = await log_low_quality_extractions(db)
+                click.echo("\n🔍 Low-quality extractions:")
+                by_source = result.get("by_sourceType", result)
+                for source_type, count in by_source.items():
+                    click.echo(f"  {source_type}: {count}")
+
+    try:
+        asyncio.run(_run())
+    except Exception as exc:
+        click.echo(f"❌ Enrichment failed: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+
+    click.echo("\n✨ Enrichment complete")
+
+
 @main.command()
 @click.option(
     "--output-dir",

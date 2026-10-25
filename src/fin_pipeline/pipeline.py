@@ -271,6 +271,7 @@ async def run_ingestion_pipeline(
         "source": source.upper(),
     }
     _ensure_source_type(payload)
+    payload["cik"] = metadata_input.get("cik") or payload.get("cik") or None
     payload["periodEndDate"] = metadata_input.get("periodEndDate")
     payload["fiscalYearEndMonth"] = metadata_input.get("fiscalYearEndMonth")
     payload["isAmendment"] = metadata_input.get("isAmendment", False)
@@ -343,7 +344,17 @@ async def run_ingestion_pipeline(
             metadata_confidence = parsed.get("metadataConfidence")
             if metadata_confidence:
                 payload["metadataConfidence"] = metadata_confidence
-            for metadata_key in ("stockName", "filingDate", "filingType", "exchange"):
+            for metadata_key in (
+                "stockName",
+                "filingDate",
+                "filingType",
+                "exchange",
+                "cik",
+                "lei",
+                "isin",
+                "cusip",
+                "sedol",
+            ):
                 existing_value = payload.get(metadata_key)
                 if parsed.get(metadata_key) and existing_value in (None, "", "UNKNOWN"):
                     payload[metadata_key] = parsed[metadata_key]
@@ -454,6 +465,7 @@ async def run_html_content_pipeline(
         "source": source.upper(),
     }
     _ensure_source_type(payload)
+    payload["cik"] = metadata_input.get("cik") or payload.get("cik") or None
     payload["periodEndDate"] = metadata_input.get("periodEndDate")
     payload["fiscalYearEndMonth"] = metadata_input.get("fiscalYearEndMonth")
     payload["isAmendment"] = metadata_input.get("isAmendment", False)
@@ -504,7 +516,17 @@ async def run_html_content_pipeline(
         metadata_confidence = parsed.get("metadataConfidence")
         if metadata_confidence:
             payload["metadataConfidence"] = metadata_confidence
-        for metadata_key in ("stockName", "filingDate", "filingType", "exchange"):
+        for metadata_key in (
+            "stockName",
+            "filingDate",
+            "filingType",
+            "exchange",
+            "cik",
+            "lei",
+            "isin",
+            "cusip",
+            "sedol",
+        ):
             if parsed.get(metadata_key) and payload.get(metadata_key) in (
                 None,
                 "",

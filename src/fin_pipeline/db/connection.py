@@ -128,9 +128,35 @@ class _HttpSurrealConnection:
             response = surreal_query(query, timeout=120)
         return _raise_for_query_error(response)
 
+    async def merge(self, record_id: str, fields: dict):
+        """Partial update preserving the rest of the record."""
+        if not fields:
+            return None
+        cleaned = _prune_none_values(dict(fields))
+        for field_name in (
+            "metadataSources",
+            "metadataConfidence",
+            "documentChunks",
+            "documentTables",
+            "xbrlFacts",
+            "xbrlProvenance",
+            "exhibitSectionMap",
+        ):
+            if field_name in cleaned:
+                cleaned[field_name] = _serialize_metadata_map(cleaned[field_name])
+        cleaned["updatedAt"] = datetime.now(UTC)
+        quoted_record_id = quote_record_id(record_id)
+        query = f"UPDATE {quoted_record_id} MERGE {_surrealql_literal(cleaned)};"
+        response = surreal_query(query, timeout=60)
+        return _raise_for_query_error(response)
+
     async def query(self, sql: str, params: dict | None = None):
         response = surreal_query(sql, timeout=120)
         return _raise_for_query_error(response)
+
+    async def query_raw(self, sql: str, timeout: int = 60):
+        """Execute arbitrary SurrealQL and return the raw response."""
+        return surreal_query(sql, timeout=timeout)
 
     async def close(self):
         return None

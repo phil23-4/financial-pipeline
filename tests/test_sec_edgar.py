@@ -84,6 +84,34 @@ def test_stream_filters_override_csv_filters(tmp_path, monkeypatch):
     assert results[0][1]["pageCount"] is None
 
 
+def test_stream_sets_cik_from_company(tmp_path, monkeypatch):
+    csv_path = tmp_path / "companies.csv"
+    csv_path.write_text("ticker\nAAPL\n")
+    filing = SimpleNamespace(
+        accession_no="0000320193-25-000079",
+        html=lambda: "<html>filing</html>",
+        form="10-K",
+        company="Apple Inc.",
+        report_date="2025-09-27",
+        filing_date="2025-11-01",
+        cik=999999,
+    )
+    company = MagicMock()
+    company.cik = 320193
+    company.get_ticker.return_value = "AAPL"
+    company.get_filings.return_value = [filing]
+    fake_edgar = SimpleNamespace(
+        Company=MagicMock(return_value=company),
+        set_identity=MagicMock(),
+    )
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
+
+    with patch.dict("sys.modules", {"edgar": fake_edgar}):
+        results = list(stream_filings_from_csv(str(csv_path)))
+
+    assert results[0][1]["cik"] == "0000320193"
+
+
 def test_stream_includes_fiscal_end_amendment_and_csv_industry(tmp_path, monkeypatch):
     csv_path = tmp_path / "companies.csv"
     csv_path.write_text("ticker,Industry\nTEST,Banking\n")

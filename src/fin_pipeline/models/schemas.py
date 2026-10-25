@@ -37,6 +37,11 @@ class ExchangeFilingModel(BaseModel):
     filingDate: str | None = None
     documentUrl: str | None = None
     source: str
+    cik: str | None = None
+    lei: str | None = None
+    isin: str | None = None
+    cusip: str | None = None
+    sedol: str | None = None
     sourceType: Literal["structured_filing", "glossy_report", "unknown"] = "unknown"
     reportingYear: int | None = None
     # Metadata extraction fields
@@ -71,6 +76,16 @@ class ExchangeFilingModel(BaseModel):
     metadataSources: str | None = None
     metadataConfidence: str | None = None
     exhibitSectionMap: str | None = None
+
+    @field_validator("cik", mode="before")
+    @classmethod
+    def normalize_cik(cls, value):
+        if value is None or value == "":
+            return None
+        digits = "".join(character for character in str(value).strip() if character.isdigit())
+        if not digits:
+            return None
+        return digits.zfill(10)
 
     @field_validator("filingDate", mode="before")
     @classmethod

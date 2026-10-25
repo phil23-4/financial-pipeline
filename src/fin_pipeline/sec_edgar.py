@@ -379,6 +379,11 @@ def _stream_filings_from_csv(
             if fiscal_year_end_month is None and period_end_date:
                 fiscal_year_end_month = _parse_fy_end_month(period_end_date)
             form_upper = str(filing.form).upper()
+            company_cik = getattr(company, "cik", None)
+            if not isinstance(company_cik, (str, int)) or isinstance(
+                company_cik, bool
+            ):
+                company_cik = getattr(filing, "cik", None)
             metadata = {
                 "filingId": f"sec_{ticker.upper()}_{accession}",
                 "companyTicker": ticker.upper(),
@@ -400,7 +405,7 @@ def _stream_filings_from_csv(
                 "pageCount": None,
                 "industryCodeRaw": row.get("industry"),
                 "referencedTickers": [],
-                "cik": str(filing.cik).zfill(10),
+                "cik": str(company_cik).zfill(10) if company_cik is not None else None,
                 "exhibitSectionMap": json.dumps(section_map) if section_map else None,
             }
             yield html_content, metadata
