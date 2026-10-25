@@ -460,7 +460,15 @@ async def test_html_content_pipeline_ingests_without_file(
     mock_surreal_conn.return_value.__aenter__.return_value = mock_db
     monkeypatch.setattr(
         "fin_pipeline.pipeline._load_xbrl_bulk_cache",
-        lambda: None,
+        lambda: {
+            ("0000320193-25-000079", "assets"): {
+                "value": 42,
+                "tag": "Assets",
+                "unit": "USD",
+                "period": "2025-09-27",
+                "kind": "instant",
+            }
+        },
     )
 
     completed = await run_html_content_pipeline(
@@ -490,7 +498,7 @@ async def test_html_content_pipeline_ingests_without_file(
 
 
 async def _run_schema_placeholder_ingestion(
-    metadata, tmp_path, monkeypatch, route
+    metadata, tmp_path, monkeypatch, route, include_xbrl=False
 ):
     db = AsyncMock()
     connection_context = AsyncMock()
@@ -523,9 +531,26 @@ async def _run_schema_placeholder_ingestion(
         "fin_pipeline.pipeline.enrich_filing_metadata_with_edgartools",
         lambda result, _accession: result,
     )
+    accession = metadata["filingId"].removeprefix("sec_")
+    ticker = metadata.get("companyTicker", "")
+    if ticker:
+        accession = accession.removeprefix(f"{ticker}_")
+    cache = (
+        {
+            (accession, "assets"): {
+                "value": 42,
+                "tag": "Assets",
+                "unit": "USD",
+                "period": "2023-12-31",
+                "kind": "instant",
+            }
+        }
+        if include_xbrl
+        else {}
+    )
     monkeypatch.setattr(
-        "fin_pipeline.pipeline._xbrl_facts_for_payload",
-        lambda *_args, **_kwargs: {"assets": 42},
+        "fin_pipeline.pipeline._load_xbrl_bulk_cache",
+        lambda: cache,
     )
     if route == "file":
         html_path = tmp_path / "placeholder.html"
@@ -570,9 +595,9 @@ async def test_new_fields_default_to_none(tmp_path, monkeypatch, route):
         "industryConfidence",
         "xbrlCurrency",
         "xbrlProvenance",
-        "xbrlSource",
     ):
         assert record[field] is None
+    assert record["xbrlSource"] == "none"
     assert record["isAmendment"] is False
 
 
@@ -648,7 +673,7 @@ async def test_period_end_date_validator_appends_time(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_xbrl_placeholder_fields_remain_none(tmp_path, monkeypatch):
+async def test_xbrl_fields_populate_from_bulk_cache(tmp_path, monkeypatch):
     record = await _run_schema_placeholder_ingestion(
         {
             "filingId": "schema_xbrl_placeholders",
@@ -663,12 +688,19 @@ async def test_xbrl_placeholder_fields_remain_none(tmp_path, monkeypatch):
         tmp_path,
         monkeypatch,
         "html",
+        include_xbrl=True,
     )
 
     assert json.loads(record["xbrlFacts"]) == {"assets": 42}
-    assert record["xbrlCurrency"] is None
-    assert record["xbrlProvenance"] is None
-    assert record["xbrlSource"] is None
+    assert record["xbrlCurrency"] == "USD"
+    assert json.loads(record["xbrlProvenance"]) == {
+        "assets": {
+            "tag": "Assets",
+            "unit": "USD",
+            "period": "2023-12-31",
+        }
+    }
+    assert record["xbrlSource"] == "bulk"
 
 
 def test_existing_records_remain_valid_without_new_fields():

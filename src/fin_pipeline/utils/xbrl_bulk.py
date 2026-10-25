@@ -35,6 +35,10 @@ _DOWNLOAD_RETRY_EXCEPTIONS = (
     ssl.SSLError,
 )
 
+# NOTE: segmentRevenue is intentionally absent. It shares tags with revenues
+# (RevenueFromContractWithCustomerExcludingAssessedTax, Revenues, Revenue) and
+# cannot be reliably distinguished from the consolidated figure without
+# dimensional parsing.
 CANONICAL_CONCEPTS = {
     "revenues": [
         ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),
@@ -104,30 +108,44 @@ CANONICAL_CONCEPTS = {
         ("us-gaap", "DepreciationAmortizationAndAccretionNet"),
         ("ifrs-full", "DepreciationAndAmortisationExpense"),
     ],
-    "segmentRevenue": [
-        ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),
-        ("us-gaap", "Revenues"),
-        ("ifrs-full", "Revenue"),
-    ],
     "capitalizedComputerSoftwareNet": [
         ("us-gaap", "CapitalizedComputerSoftwareNet"),
         ("us-gaap", "CapitalizedComputerSoftwareGross"),
         ("ifrs-full", "IntangibleAssetsOtherThanGoodwill"),
     ],
 }
-_CONCEPT_TAGS = {
-    concept: tuple(tag for _, tag in tags) for concept, tags in CANONICAL_CONCEPTS.items()
+CONCEPT_KIND = {
+    "revenues": "duration",
+    "costOfRevenue": "duration",
+    "grossProfit": "duration",
+    "operatingIncomeLoss": "duration",
+    "netIncomeLoss": "duration",
+    "researchAndDevelopmentExpense": "duration",
+    "depreciationDepletionAndAmortization": "duration",
+    "capitalExpenditures": "duration",
+    "assets": "instant",
+    "liabilities": "instant",
+    "liabilitiesCurrent": "instant",
+    "stockholdersEquity": "instant",
+    "cashAndCashEquivalents": "instant",
+    "intangibleAssets": "instant",
+    "goodwill": "instant",
+    "propertyPlantAndEquipmentNet": "instant",
+    "capitalizedComputerSoftwareNet": "instant",
 }
-_TAG_TO_CONCEPT = {}
+_TAG_TO_CONCEPTS: dict[str, list[tuple[str, int]]] = {}
 for concept, tags in CANONICAL_CONCEPTS.items():
-    for _, tag in tags:
-        _TAG_TO_CONCEPT.setdefault(tag, concept)
+    for priority, (_, tag) in enumerate(tags):
+        _TAG_TO_CONCEPTS.setdefault(tag, []).append((concept, priority))
 _PARQUET_COLUMNS = [
     "accession_no",
     "cik",
     "concept",
     "value",
     "unit",
+    "period",
+    "tag",
+    "kind",
     "fiscal_year",
     "fiscal_period",
     "form",
@@ -145,19 +163,14 @@ def _normalize_cik(cik: Any) -> str:
     return digits.zfill(10)
 
 
-def _is_annual(fact: dict[str, Any]) -> bool:
-    if fact.get("fp") == "FY":
-        return True
-    return fact.get("qtrs") == 4
-
-
 def _normalize_value(value: Any, uom: str) -> float | None:
     if str(uom).upper() not in {"USD", "US$"}:
         return None
     try:
-        return float(value)
+        normalized = float(value)
     except (TypeError, ValueError):
         return None
+    return normalized if math.isfinite(normalized) else None
 
 
 def _matches_period(fact_end: str, filing_period: str) -> bool:
@@ -165,6 +178,106 @@ def _matches_period(fact_end: str, filing_period: str) -> bool:
         return str(raw or "").replace("-", "")[:8]
 
     return normalize(fact_end) == normalize(filing_period)
+
+
+def _is_consolidated_fact(fact: dict[str, Any]) -> bool:
+    if "segments" in fact and str(fact.get("segments", "")).strip():
+        return False
+    for key in fact:
+        if key.lower() == "segments":
+            continue
+        key_lower = key.lower()
+        if "segment" in key_lower or "member" in key_lower or "axis" in key_lower:
+            return False
+    return not str(fact.get("frame", "")).startswith("C-")
+
+
+def _select_fsds_fact(
+    candidates: list[dict[str, Any]],
+    concept: str,
+    filing_period: str,
+) -> dict[str, Any] | None:
+    kind = CONCEPT_KIND[concept]
+    expected_qtrs = "4" if kind == "duration" else "0"
+    for candidate in candidates:
+        if not _is_consolidated_fact(candidate):
+            continue
+        if candidate.get("uom") != "USD":
+            continue
+        if not _matches_period(str(candidate.get("ddate", "")), filing_period):
+            continue
+        if str(candidate.get("qtrs", "")) != expected_qtrs:
+            continue
+        value = _normalize_value(candidate.get("value"), candidate.get("uom", ""))
+        if value is None:
+            continue
+        return {**candidate, "value": value}
+    return None
+
+
+def _select_companyfacts_fact(
+    candidates: list[dict[str, Any]],
+    concept: str,
+    filing_period: str,
+) -> dict[str, Any] | None:
+    kind = CONCEPT_KIND[concept]
+    for candidate in candidates:
+        if not _is_consolidated_fact(candidate) or candidate.get("unit") != "USD":
+            continue
+        if not _matches_period(str(candidate.get("end", "")), filing_period):
+            continue
+        if kind == "duration" and candidate.get("fp") != "FY":
+            continue
+        if kind == "instant" and candidate.get("fp") in {
+            "Q1",
+            "Q2",
+            "Q3",
+            "Q4",
+            "FY",
+        }:
+            continue
+        value = _normalize_value(candidate.get("val"), candidate.get("unit", ""))
+        if value is not None:
+            return {**candidate, "value": value}
+    return None
+
+
+def _apply_invariants(
+    facts: dict[str, dict[str, Any]],
+    accession: str,
+) -> dict[str, dict[str, Any]]:
+    def value(concept: str) -> float | None:
+        fact = facts.get(concept)
+        if not fact:
+            return None
+        raw = fact.get("value")
+        return raw if isinstance(raw, (int, float)) else None
+
+    def null(concept: str) -> None:
+        if concept in facts:
+            log.warning(
+                f"{accession}: {concept} fails invariant, nulled "
+                f"(value was {facts[concept]['value']})"
+            )
+            del facts[concept]
+
+    revenue = value("revenues")
+    operating_income = value("operatingIncomeLoss")
+    cost_of_revenue = value("costOfRevenue")
+    assets = value("assets")
+    cash = value("cashAndCashEquivalents")
+    liabilities = value("liabilities")
+
+    if revenue is not None and operating_income is not None and operating_income > revenue:
+        null("operatingIncomeLoss")
+        null("revenues")
+    if revenue is not None and cost_of_revenue is not None and cost_of_revenue > revenue:
+        null("costOfRevenue")
+    if assets is not None and cash is not None and cash > assets:
+        null("cashAndCashEquivalents")
+    if assets is not None and liabilities is not None and liabilities > assets * 2:
+        null("liabilities")
+    return facts
 
 
 def _is_valid_zip_file(path: str | os.PathLike[str]) -> bool:
@@ -375,7 +488,7 @@ def download_fsds_quarter(
         return None
     except RuntimeError as exc:
         log.error(f"  Corrupt download for {year}q{quarter}: {exc}")
-        log.error(f"  Skipping; re-run to retry")
+        log.error("  Skipping; re-run to retry")
         return None
 
 
@@ -405,7 +518,7 @@ def parse_companyfacts_zip(
     zip_path: str,
     cik_list: set[str] | None,
 ) -> dict[str, dict[str, Any]]:
-    """Read selected filing-level facts from companyfacts.zip."""
+    """Select consolidated annual USD facts from companyfacts.zip by accession."""
     allowed = _allowed_ciks(cik_list)
     result: dict[str, dict[str, Any]] = {}
     requested = (
@@ -439,17 +552,21 @@ def parse_companyfacts_zip(
                 if allowed is not None and cik not in allowed:
                     continue
 
-                canonical_facts: dict[str, list[dict[str, Any]]] = {}
                 taxonomies = company_data.get("facts", {})
                 if not isinstance(taxonomies, dict):
                     continue
 
-                for taxonomy_facts in taxonomies.values():
-                    if not isinstance(taxonomy_facts, dict):
-                        continue
-                    for tag, concept_data in taxonomy_facts.items():
-                        canonical = _TAG_TO_CONCEPT.get(tag)
-                        if canonical is None or not isinstance(concept_data, dict):
+                candidates: dict[
+                    str, dict[str, dict[tuple[str, str], list[dict[str, Any]]]]
+                ] = {}
+                periods: dict[str, list[str]] = {}
+                for concept, tag_priority in CANONICAL_CONCEPTS.items():
+                    for namespace, tag in tag_priority:
+                        taxonomy_facts = taxonomies.get(namespace, {})
+                        if not isinstance(taxonomy_facts, dict):
+                            continue
+                        concept_data = taxonomy_facts.get(tag)
+                        if not isinstance(concept_data, dict):
                             continue
                         units = concept_data.get("units", {})
                         if not isinstance(units, dict):
@@ -457,29 +574,76 @@ def parse_companyfacts_zip(
                         for unit, observations in units.items():
                             if not isinstance(observations, list):
                                 continue
-                            if str(unit).upper() != "USD":
-                                continue
                             for observation in observations:
-                                if not isinstance(observation, dict) or not observation.get(
-                                    "accn"
-                                ):
+                                if not isinstance(observation, dict):
+                                    continue
+                                accession = str(observation.get("accn") or "")
+                                if not accession:
                                     continue
                                 fact = {
-                                    key: observation[key]
-                                    for key in (
-                                        "val",
-                                        "fy",
-                                        "fp",
-                                        "form",
-                                        "accn",
-                                        "end",
-                                        "filed",
-                                    )
-                                    if key in observation
+                                    **observation,
+                                    "unit": unit,
+                                    "tag": tag,
+                                    "namespace": namespace,
                                 }
-                                fact["unit"] = unit
-                                canonical_facts.setdefault(canonical, []).append(fact)
-                result[cik] = {"facts": canonical_facts}
+                                candidates.setdefault(accession, {}).setdefault(
+                                    concept, {}
+                                ).setdefault((namespace, tag), []).append(fact)
+                                if (
+                                    observation.get("form")
+                                    in {"10-K", "10-KT", "20-F", "40-F"}
+                                    and observation.get("end")
+                                ):
+                                    periods.setdefault(accession, []).append(
+                                        str(observation["end"])
+                                    )
+
+                for accession, concepts in candidates.items():
+                    filing_period = max(periods.get(accession, []), default="")
+                    if not filing_period:
+                        continue
+                    selected_facts: dict[str, dict[str, Any]] = {}
+                    filing_metadata: dict[str, Any] = {}
+                    for concept, tag_priority in CANONICAL_CONCEPTS.items():
+                        concept_candidates = concepts.get(concept, {})
+                        for namespace, tag in tag_priority:
+                            selected = _select_companyfacts_fact(
+                                concept_candidates.get((namespace, tag), []),
+                                concept,
+                                filing_period,
+                            )
+                            if selected is None:
+                                continue
+                            selected_facts[concept] = {
+                                "value": selected["value"],
+                                "tag": tag,
+                                "unit": selected["unit"],
+                                "period": selected["end"],
+                                "kind": CONCEPT_KIND[concept],
+                            }
+                            filing_metadata = {
+                                "form": selected.get("form"),
+                                "filed": selected.get("filed"),
+                                "fy": selected.get("fy"),
+                            }
+                            break
+
+                    selected_facts = _apply_invariants(selected_facts, accession)
+                    currencies = [
+                        fact["unit"] for fact in selected_facts.values() if fact.get("unit")
+                    ]
+                    result[accession] = {
+                        "cik": cik,
+                        "period": filing_period,
+                        "form": filing_metadata.get("form"),
+                        "filed": filing_metadata.get("filed"),
+                        "facts": selected_facts,
+                        "currency": (
+                            max(set(currencies), key=currencies.count)
+                            if currencies
+                            else None
+                        ),
+                    }
             log.info(f"  parsed {total}/{total} CIK files")
     except zipfile.BadZipFile as exc:
         log.error(f"  {Path(zip_path).name} is not a valid ZIP: {exc}; skipping")
@@ -510,19 +674,6 @@ def _date_from_fsds(value: str) -> str:
     return value
 
 
-def _numeric_value(value: str) -> int | float | None:
-    value = value.strip()
-    if not value:
-        return None
-    try:
-        number = float(value)
-    except ValueError:
-        return None
-    if not math.isfinite(number):
-        return None
-    return int(number) if number.is_integer() else number
-
-
 def parse_fsds_zip(
     zip_path: str,
     cik_list: set[str] | None,
@@ -551,8 +702,7 @@ def parse_fsds_zip(
                     "period": period,
                     "filed": _date_from_fsds(row.get("filed", "")),
                     "facts": {},
-                    "units": {},
-                    "_fact_ranks": {},
+                    "_fact_priorities": {},
                 }
 
             numeric_rows = 0
@@ -563,40 +713,45 @@ def parse_fsds_zip(
                     started = time.monotonic()
                 accession = row.get("adsh", "").strip()
                 filing = filings.get(accession)
-                canonical = _TAG_TO_CONCEPT.get(row.get("tag", "").strip())
-                if filing is None or canonical is None:
+                tag = row.get("tag", "").strip()
+                concept_priorities = _TAG_TO_CONCEPTS.get(tag)
+                if filing is None or concept_priorities is None:
                     continue
-                if str(row.get("uom", "")).strip().upper() != "USD":
-                    continue
-                ddate = _date_from_fsds(row.get("ddate", ""))
-                if ddate != filing["period"]:
-                    continue
-                try:
-                    quarters = int(row.get("qtrs", ""))
-                except ValueError:
-                    continue
-                if quarters == 4:
-                    rank = 3
-                elif quarters == 0:
-                    rank = 2
-                elif quarters == 1:
-                    rank = 1
-                else:
-                    continue
-                value = _normalize_value(row.get("value", ""), row.get("uom", ""))
-                if value is None:
-                    continue
-                previous_rank = filing["_fact_ranks"].get(canonical, 0)
-                if rank > previous_rank:
-                    filing["facts"][canonical] = value
-                    filing["units"][canonical] = row.get("uom", "").strip() or None
-                    filing["_fact_ranks"][canonical] = rank
+                candidate = {
+                    **row,
+                    "ddate": _date_from_fsds(row.get("ddate", "")),
+                }
+                for concept, priority in concept_priorities:
+                    selected = _select_fsds_fact(
+                        [candidate], concept, filing["period"]
+                    )
+                    if selected is None:
+                        continue
+                    previous_priority = filing["_fact_priorities"].get(
+                        concept, len(CANONICAL_CONCEPTS[concept])
+                    )
+                    if priority < previous_priority:
+                        filing["facts"][concept] = {
+                            "value": selected["value"],
+                            "tag": tag,
+                            "unit": selected["uom"],
+                            "period": selected["ddate"],
+                            "kind": CONCEPT_KIND[concept],
+                        }
+                        filing["_fact_priorities"][concept] = priority
     except zipfile.BadZipFile as exc:
         log.error(f"  {Path(zip_path).name} is not a valid ZIP: {exc}; skipping")
         return {}
 
-    for filing in filings.values():
-        filing.pop("_fact_ranks", None)
+    for accession, filing in filings.items():
+        filing.pop("_fact_priorities", None)
+        filing["facts"] = _apply_invariants(filing["facts"], accession)
+        currencies = [
+            fact["unit"] for fact in filing["facts"].values() if fact.get("unit")
+        ]
+        filing["currency"] = (
+            max(set(currencies), key=currencies.count) if currencies else None
+        )
     log.info(f"  {submission_rows} filings, {numeric_rows} facts")
     _mark_download_done(zip_path)
     return filings

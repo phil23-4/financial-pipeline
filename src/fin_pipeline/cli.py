@@ -321,6 +321,10 @@ def xbrl_bulk(
     started = time.monotonic()
     try:
         cik_list = read_cik_csv(cik_csv) if cik_csv else None
+        log.info(
+            f"XBRL bulk: processing {len(cik_list) if cik_list is not None else 'all'} "
+            "CIKs, USD-only (non-USD filers will produce no facts)"
+        )
         os.makedirs(download_dir, exist_ok=True)
         companyfacts_path = None
         if not skip_companyfacts:
@@ -336,34 +340,26 @@ def xbrl_bulk(
         )
 
         rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-        companyfacts_ranks: dict[tuple[str, str], tuple[str, bool, bool]] = {}
         if companyfacts_path:
             companyfacts = parse_companyfacts_zip(companyfacts_path, cik_list)
-            for cik, company in companyfacts.items():
-                for concept, facts in company.get("facts", {}).items():
-                    for fact in facts:
-                        accession = fact.get("accn")
-                        if not accession or "val" not in fact:
-                            continue
-                        key = (accession, concept)
-                        rank = (
-                            str(fact.get("end") or ""),
-                            fact.get("unit") == "USD",
-                            fact.get("fp") == "FY",
-                        )
-                        if key not in companyfacts_ranks or rank > companyfacts_ranks[key]:
-                            rows_by_key[key] = {
-                                "accession_no": accession,
-                                "cik": cik,
-                                "concept": concept,
-                                "value": fact["val"],
-                                "unit": fact.get("unit"),
-                                "fiscal_year": fact.get("fy"),
-                                "fiscal_period": fact.get("fp"),
-                                "form": fact.get("form"),
-                                "filed_date": fact.get("filed"),
-                            }
-                            companyfacts_ranks[key] = rank
+            for accession, filing in companyfacts.items():
+                period = filing.get("period", "")
+                period_year = int(period[:4]) if period[:4].isdigit() else None
+                for concept, fact in filing.get("facts", {}).items():
+                    rows_by_key[(accession, concept)] = {
+                        "accession_no": accession,
+                        "cik": filing["cik"],
+                        "concept": concept,
+                        "value": fact["value"],
+                        "unit": fact["unit"],
+                        "period": fact["period"],
+                        "tag": fact["tag"],
+                        "kind": fact["kind"],
+                        "fiscal_year": period_year,
+                        "fiscal_period": "FY",
+                        "form": filing.get("form"),
+                        "filed_date": filing.get("filed"),
+                    }
 
         for fsds_path in fsds_paths:
             filings = parse_fsds_zip(fsds_path, cik_list)
@@ -384,13 +380,35 @@ def xbrl_bulk(
                         "accession_no": accession,
                         "cik": filing["cik"],
                         "concept": concept,
-                        "value": value,
-                        "unit": filing.get("units", {}).get(concept),
+                        "value": value["value"],
+                        "unit": value["unit"],
+                        "period": value["period"],
+                        "tag": value["tag"],
+                        "kind": value["kind"],
                         "fiscal_year": period_year,
                         "fiscal_period": fiscal_period,
                         "form": filing.get("form"),
                         "filed_date": filing.get("filed"),
                     }
+
+        from fin_pipeline.utils.xbrl_bulk import _apply_invariants
+
+        accession_facts: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in rows_by_key.values():
+            accession_facts.setdefault(row["accession_no"], {})[row["concept"]] = {
+                "value": row["value"],
+                "tag": row.get("tag"),
+                "unit": row.get("unit"),
+                "period": row.get("period"),
+                "kind": row.get("kind"),
+            }
+        for accession, facts in accession_facts.items():
+            _apply_invariants(facts, accession)
+        rows_by_key = {
+            key: row
+            for key, row in rows_by_key.items()
+            if key[1] in accession_facts[key[0]]
+        }
 
         import pandas as pd
 

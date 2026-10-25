@@ -33,9 +33,9 @@ def _companyfacts_company(concepts):
                                 "val": value,
                                 "accn": "0000000001-24-000001",
                                 "fy": 2023,
-                                "fp": "FY",
                                 "form": "10-K",
                                 "filed": "2024-02-01",
+                                **({"fp": "FY"} if tag != "Assets" else {}),
                             }
                         ]
                     },
@@ -59,31 +59,21 @@ def test_parse_companyfacts_filters_concepts(tmp_path):
 
     parsed = parse_companyfacts_zip(str(zip_path), {"1"})
 
-    assert parsed["0000000001"]["facts"] == {
-        "revenues": [
-            {
-                "end": "2023-12-31",
-                "val": 123,
-                "accn": "0000000001-24-000001",
-                "fy": 2023,
-                "fp": "FY",
-                "form": "10-K",
-                "filed": "2024-02-01",
-                "unit": "USD",
-            }
-        ],
-        "assets": [
-            {
-                "end": "2023-12-31",
-                "val": 456,
-                "accn": "0000000001-24-000001",
-                "fy": 2023,
-                "fp": "FY",
-                "form": "10-K",
-                "filed": "2024-02-01",
-                "unit": "USD",
-            }
-        ],
+    filing = parsed["0000000001-24-000001"]
+    assert filing["period"] == "2023-12-31"
+    assert filing["facts"]["revenues"] == {
+        "value": 123.0,
+        "tag": "Revenues",
+        "unit": "USD",
+        "period": "2023-12-31",
+        "kind": "duration",
+    }
+    assert filing["facts"]["assets"] == {
+        "value": 456.0,
+        "tag": "Assets",
+        "unit": "USD",
+        "period": "2023-12-31",
+        "kind": "instant",
     }
 
 
@@ -99,8 +89,9 @@ def test_parse_companyfacts_filters_ciks(tmp_path):
 
     parsed = parse_companyfacts_zip(str(zip_path), {"2"})
 
-    assert list(parsed) == ["0000000002"]
-    assert parsed["0000000002"]["facts"]["assets"][0]["val"] == 2
+    assert list(parsed) == ["0000000001-24-000001"]
+    assert parsed["0000000001-24-000001"]["cik"] == "0000000002"
+    assert parsed["0000000001-24-000001"]["facts"]["assets"]["value"] == 2.0
 
 
 def _write_fsds_zip(path, submissions, numeric_facts=()):
@@ -150,8 +141,14 @@ def test_parse_fsds_num_maps_canonical(tmp_path):
 
     parsed = parse_fsds_zip(str(zip_path), {"1"})
 
-    assert parsed[accession]["facts"]["revenues"] == 123456
-    assert parsed[accession]["units"]["revenues"] == "USD"
+    assert parsed[accession]["facts"]["revenues"] == {
+        "value": 123456.0,
+        "tag": "Revenues",
+        "unit": "USD",
+        "period": "2023-12-31",
+        "kind": "duration",
+    }
+    assert parsed[accession]["currency"] == "USD"
 
 
 def test_parse_fsds_prefers_annual_fact_and_keeps_quarterly_fallback(tmp_path):
@@ -169,7 +166,7 @@ def test_parse_fsds_prefers_annual_fact_and_keeps_quarterly_fallback(tmp_path):
                 "5",
                 "USD",
                 "20231231",
-                "1",
+                "4",
             ),
             (accession, "Assets", "500", "USD", "20231231", "0"),
         ],
@@ -177,11 +174,171 @@ def test_parse_fsds_prefers_annual_fact_and_keeps_quarterly_fallback(tmp_path):
 
     parsed = parse_fsds_zip(str(zip_path), {"1"})
 
-    assert parsed[accession]["facts"] == {
+    assert {
+        concept: fact["value"] for concept, fact in parsed[accession]["facts"].items()
+    } == {
         "revenues": 40,
         "researchAndDevelopmentExpense": 5,
         "assets": 500,
     }
+
+
+def test_segment_revenue_concept_is_not_exported():
+    assert "segmentRevenue" not in xbrl_bulk.CANONICAL_CONCEPTS
+    assert "segmentRevenue" not in xbrl_bulk.CONCEPT_KIND
+
+
+def test_dimensional_fact_rejected():
+    assert not xbrl_bulk._is_consolidated_fact({"segments": "SegmentA"})
+    assert xbrl_bulk._is_consolidated_fact({"segments": ""})
+    assert not xbrl_bulk._is_consolidated_fact({"frame": "C-CY2023"})
+
+
+def test_instant_uses_qtrs_zero():
+    candidates = [
+        {"uom": "USD", "ddate": "20231231", "qtrs": "4", "value": "4"},
+        {"uom": "USD", "ddate": "20231231", "qtrs": "0", "value": "0"},
+    ]
+
+    selected = xbrl_bulk._select_fsds_fact(candidates, "assets", "20231231")
+
+    assert selected["value"] == 0
+    assert selected["qtrs"] == "0"
+
+
+def test_duration_uses_qtrs_four_only():
+    candidates = [
+        {"uom": "USD", "ddate": "20231231", "qtrs": "1", "value": "1"},
+        {"uom": "USD", "ddate": "20231231", "qtrs": "4", "value": "4"},
+    ]
+    assert xbrl_bulk._select_fsds_fact(
+        candidates, "revenues", "20231231"
+    )["value"] == 4
+    assert (
+        xbrl_bulk._select_fsds_fact(candidates[:1], "revenues", "20231231")
+        is None
+    )
+
+
+def test_period_match_required():
+    candidates = [
+        {"uom": "USD", "ddate": "20221231", "qtrs": "4", "value": "2022"},
+        {"uom": "USD", "ddate": "20231231", "qtrs": "4", "value": "2023"},
+    ]
+    selected = xbrl_bulk._select_fsds_fact(
+        candidates, "revenues", "20231231"
+    )
+    assert selected["value"] == 2023
+
+
+def test_priority_order_enforced(tmp_path):
+    accession = "0000000001-24-000001"
+    zip_path = tmp_path / "priority.zip"
+    _write_fsds_zip(
+        zip_path,
+        [(accession, "1", "Example", "10-K", "20231231", "20240201")],
+        [
+            (
+                accession,
+                "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "100",
+                "USD",
+                "20231231",
+                "4",
+            ),
+            (accession, "Revenues", "200", "USD", "20231231", "4"),
+        ],
+    )
+
+    parsed = parse_fsds_zip(str(zip_path), {"1"})
+    assert parsed[accession]["facts"]["revenues"]["value"] == 100
+
+
+def test_priority_falls_back_when_first_tag_has_no_valid_period(tmp_path):
+    accession = "0000000001-24-000001"
+    zip_path = tmp_path / "priority-fallback.zip"
+    _write_fsds_zip(
+        zip_path,
+        [(accession, "1", "Example", "10-K", "20231231", "20240201")],
+        [
+            (
+                accession,
+                "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "100",
+                "USD",
+                "20221231",
+                "4",
+            ),
+            (accession, "Revenues", "200", "USD", "20231231", "4"),
+        ],
+    )
+
+    parsed = parse_fsds_zip(str(zip_path), {"1"})
+    assert parsed[accession]["facts"]["revenues"]["value"] == 200
+
+
+def test_non_usd_rejected():
+    assert (
+        xbrl_bulk._select_fsds_fact(
+            [
+                {
+                    "uom": "EUR",
+                    "ddate": "20231231",
+                    "qtrs": "4",
+                    "value": "100",
+                }
+            ],
+            "revenues",
+            "20231231",
+        )
+        is None
+    )
+
+
+def test_invariant_operating_income_greater_than_revenue():
+    facts = {
+        "revenues": {"value": 1_000_000},
+        "operatingIncomeLoss": {"value": 2_000_000},
+    }
+    xbrl_bulk._apply_invariants(facts, "accession")
+    assert facts == {}
+
+
+def test_invariant_cash_greater_than_assets():
+    facts = {
+        "assets": {"value": 3_000_000_000},
+        "cashAndCashEquivalents": {"value": 5_000_000_000},
+    }
+    xbrl_bulk._apply_invariants(facts, "accession")
+    assert "cashAndCashEquivalents" not in facts
+
+
+def test_companyfacts_fy_filter():
+    candidates = [
+        {"unit": "USD", "end": "2023-12-31", "fp": "Q4", "val": 40},
+        {"unit": "USD", "end": "2023-12-31", "fp": "FY", "val": 50},
+    ]
+    selected = xbrl_bulk._select_companyfacts_fact(
+        candidates, "revenues", "2023-12-31"
+    )
+    assert selected["value"] == 50
+    assert (
+        xbrl_bulk._select_companyfacts_fact(
+            candidates[:1], "revenues", "2023-12-31"
+        )
+        is None
+    )
+
+
+def test_companyfacts_instant_fact_requires_no_fp():
+    candidates = [
+        {"unit": "USD", "end": "2023-12-31", "fp": "FY", "val": 40},
+        {"unit": "USD", "end": "2023-12-31", "val": 50},
+    ]
+    selected = xbrl_bulk._select_companyfacts_fact(
+        candidates, "assets", "2023-12-31"
+    )
+    assert selected["value"] == 50
 
 
 def test_download_companyfacts_sends_user_agent(tmp_path, monkeypatch):
@@ -495,11 +652,19 @@ def test_bulk_cache_loads_from_parquet(tmp_path, monkeypatch):
                 "accession_no": "acc-1",
                 "concept": "revenues",
                 "value": 100,
+                "unit": "USD",
+                "period": "2023-12-31",
+                "tag": "Revenues",
+                "kind": "duration",
             },
             {
                 "accession_no": "acc-2",
                 "concept": "assets",
                 "value": 200,
+                "unit": "USD",
+                "period": "2023-12-31",
+                "tag": "Assets",
+                "kind": "instant",
             },
         ]
     ).to_parquet(parquet_path, index=False)
@@ -507,7 +672,22 @@ def test_bulk_cache_loads_from_parquet(tmp_path, monkeypatch):
 
     cache = pipeline._load_xbrl_bulk_cache(str(parquet_path))
 
-    assert cache == {("acc-1", "revenues"): 100, ("acc-2", "assets"): 200}
+    assert cache == {
+        ("acc-1", "revenues"): {
+            "value": 100,
+            "tag": "Revenues",
+            "unit": "USD",
+            "period": "2023-12-31",
+            "kind": "duration",
+        },
+        ("acc-2", "assets"): {
+            "value": 200,
+            "tag": "Assets",
+            "unit": "USD",
+            "period": "2023-12-31",
+            "kind": "instant",
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -515,12 +695,15 @@ async def test_pipeline_prefers_bulk_cache_over_filing_extraction(monkeypatch):
     monkeypatch.setattr(
         pipeline,
         "_load_xbrl_bulk_cache",
-        lambda: {("0000000001-24-000001", "revenues"): 123},
-    )
-    monkeypatch.setattr(
-        pipeline,
-        "extract_xbrl_facts",
-        lambda _html: pytest.fail("per-filing extraction should not run"),
+        lambda: {
+            ("0000000001-24-000001", "revenues"): {
+                "value": 123,
+                "tag": "Revenues",
+                "unit": "USD",
+                "period": "2023-12-31",
+                "kind": "duration",
+            }
+        },
     )
     monkeypatch.setattr(
         pipeline,
@@ -548,6 +731,15 @@ async def test_pipeline_prefers_bulk_cache_over_filing_extraction(monkeypatch):
     assert completed is True
     facts = json.loads(model.call_args.kwargs["xbrlFacts"])
     assert facts == {"revenues": 123}
+    assert model.call_args.kwargs["xbrlSource"] == "bulk"
+    assert model.call_args.kwargs["xbrlCurrency"] == "USD"
+    assert json.loads(model.call_args.kwargs["xbrlProvenance"]) == {
+        "revenues": {
+            "tag": "Revenues",
+            "unit": "USD",
+            "period": "2023-12-31",
+        }
+    }
 
 
 @pytest.mark.asyncio
@@ -559,7 +751,15 @@ async def test_file_pipeline_prefers_bulk_cache_over_filing_extraction(
     monkeypatch.setattr(
         pipeline,
         "_load_xbrl_bulk_cache",
-        lambda: {("0000000001-24-000001", "assets"): 456},
+        lambda: {
+            ("0000000001-24-000001", "assets"): {
+                "value": 456,
+                "tag": "Assets",
+                "unit": "USD",
+                "period": "2023-12-31",
+                "kind": "instant",
+            }
+        },
     )
     monkeypatch.setattr(
         pipeline,
@@ -577,12 +777,6 @@ async def test_file_pipeline_prefers_bulk_cache_over_filing_extraction(
         "enrich_filing_metadata_with_edgartools",
         lambda parsed, _accession: parsed,
     )
-    monkeypatch.setattr(
-        pipeline,
-        "extract_xbrl_facts",
-        lambda _html: pytest.fail("per-filing extraction should not run"),
-    )
-
     with patch("fin_pipeline.pipeline.ExchangeFilingModel") as model:
         model.return_value.model_dump.return_value = {
             "filingId": "sec_AAPL_0000000001-24-000001",

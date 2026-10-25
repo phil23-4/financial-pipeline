@@ -30,7 +30,6 @@ from fin_pipeline.utils.sections import (
     label_sections_glossy,
     label_sections_structured,
 )
-from fin_pipeline.utils.xbrl_facts import extract_xbrl_facts
 
 _xbrl_bulk_cache: dict[tuple[str, str], Any] | None = None
 
@@ -55,42 +54,71 @@ def _load_xbrl_bulk_cache(
 ) -> dict[tuple[str, str], Any] | None:
     global _xbrl_bulk_cache
     if _xbrl_bulk_cache is None and os.path.exists(parquet_path):
-        from fin_pipeline.utils.xbrl_bulk import CANONICAL_CONCEPTS
-
         import pandas as pd
+
+        from fin_pipeline.utils.xbrl_bulk import CANONICAL_CONCEPTS
 
         dataframe = pd.read_parquet(parquet_path)
         _xbrl_bulk_cache = {
-            (row["accession_no"], row["concept"]): row["value"]
+            (row["accession_no"], row["concept"]): {
+                "value": row["value"],
+                "tag": row.get("tag"),
+                "unit": row.get("unit"),
+                "period": row.get("period"),
+                "kind": row.get("kind"),
+            }
             for _, row in dataframe.iterrows()
             if row["concept"] in CANONICAL_CONCEPTS
         }
     return _xbrl_bulk_cache
 
 
-def _xbrl_facts_for_payload(
-    payload: dict,
-    html_content_provider: Callable[[], str],
-) -> dict[str, Any] | None:
-    cache = _load_xbrl_bulk_cache()
+def _accession_from_filing_id(payload: dict) -> str | None:
     filing_id = payload.get("filingId")
-    if cache and filing_id:
-        from fin_pipeline.utils.xbrl_bulk import CANONICAL_CONCEPTS
+    if not isinstance(filing_id, str):
+        return None
+    accession = filing_id.removeprefix("sec_")
+    ticker = str(payload.get("companyTicker") or "")
+    if ticker and accession.startswith(f"{ticker}_"):
+        accession = accession[len(ticker) + 1 :]
+    return accession or None
 
-        accession = str(filing_id).removeprefix("sec_")
-        ticker = str(payload.get("companyTicker") or "")
-        if ticker:
-            accession = accession.removeprefix(f"{ticker}_")
-        concepts = tuple(CANONICAL_CONCEPTS)
-        cached_facts = {
-            concept: cache[(accession, concept)]
-            for concept in concepts
-            if cache.get((accession, concept)) is not None
+
+def _populate_xbrl_fields(payload: dict) -> None:
+    from fin_pipeline.utils.xbrl_bulk import (
+        CONCEPT_KIND,
+        _apply_invariants,
+    )
+
+    cache = _load_xbrl_bulk_cache()
+    accession = _accession_from_filing_id(payload)
+    selected = {
+        concept: cache[(accession, concept)]
+        for concept in CONCEPT_KIND
+        if cache and accession and (accession, concept) in cache
+    }
+    _apply_invariants(selected, accession or str(payload.get("filingId") or "unknown"))
+    facts = {concept: entry["value"] for concept, entry in selected.items()}
+    provenance = {
+        concept: {
+            "tag": entry.get("tag"),
+            "unit": entry.get("unit"),
+            "period": entry.get("period"),
         }
-        return cached_facts or None
-
-    parsed_facts = extract_xbrl_facts(html_content_provider())
-    return parsed_facts if parsed_facts else None
+        for concept, entry in selected.items()
+    }
+    currencies = [entry.get("unit") for entry in selected.values() if entry.get("unit")]
+    payload["xbrlFacts"] = facts or None
+    payload["xbrlProvenance"] = provenance or None
+    payload["xbrlSource"] = "bulk" if facts else "none"
+    payload["xbrlCurrency"] = (
+        max(set(currencies), key=currencies.count) if currencies else None
+    )
+    if not facts:
+        log.debug(
+            f"No XBRL bulk facts for {payload.get('filingId')} "
+            "(source=none, not falling back)"
+        )
 
 
 def _read_html_content(file_path: str) -> str:
@@ -262,11 +290,7 @@ async def run_ingestion_pipeline(
                     payload[metadata_key] = parsed[metadata_key]
 
             if detect_file_type(file_path) == FILE_TYPE_HTML:
-                xbrl_facts = _xbrl_facts_for_payload(
-                    payload, lambda: _read_html_content(file_path)
-                )
-                if xbrl_facts:
-                    payload["xbrlFacts"] = xbrl_facts
+                _populate_xbrl_fields(payload)
 
             if isinstance(payload.get("metadataSources"), dict):
                 payload["metadataSources"] = json.dumps(
@@ -291,7 +315,12 @@ async def run_ingestion_pipeline(
                 }
             )
 
-    for field in ("documentChunks", "documentTables", "xbrlFacts"):
+    for field in (
+        "documentChunks",
+        "documentTables",
+        "xbrlFacts",
+        "xbrlProvenance",
+    ):
         if field in payload and payload[field] is not None:
             payload[field] = json.dumps(payload[field], ensure_ascii=False)
 
@@ -404,9 +433,7 @@ async def run_html_content_pipeline(
                 "documentType": "HTML",
             }
         )
-        xbrl_facts = _xbrl_facts_for_payload(payload, lambda: html_content)
-        if xbrl_facts:
-            payload["xbrlFacts"] = xbrl_facts
+        _populate_xbrl_fields(payload)
         if metadata_input.get("exhibitSectionMap"):
             payload["exhibitSectionMap"] = metadata_input["exhibitSectionMap"]
         metadata_sources = parsed.get("metadataSources")
@@ -439,7 +466,12 @@ async def run_html_content_pipeline(
             }
         )
 
-    for field in ("documentChunks", "documentTables", "xbrlFacts"):
+    for field in (
+        "documentChunks",
+        "documentTables",
+        "xbrlFacts",
+        "xbrlProvenance",
+    ):
         if field in payload and payload[field] is not None:
             payload[field] = json.dumps(payload[field], ensure_ascii=False)
 
