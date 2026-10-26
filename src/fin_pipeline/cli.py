@@ -355,6 +355,101 @@ def enrich(
     click.echo("\n✨ Enrichment complete")
 
 
+@main.command("filter-preferred")
+@click.option(
+    "--input",
+    "-i",
+    "input_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Input CSV (e.g. sec_companies.csv)",
+)
+@click.option("--output", "-o", "output_path", default=None, help="Output CSV path")
+@click.option(
+    "--delete-ingested",
+    is_flag=True,
+    help="Also delete preferred-share records when a plain sibling remains",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report what would change without writing files or database records",
+)
+def filter_preferred(
+    input_path: str,
+    output_path: str | None,
+    delete_ingested: bool,
+    dry_run: bool,
+):
+    """Filter preferred-share tickers while preserving dual-class common shares."""
+    from fin_pipeline.preferred_filter import (
+        delete_ingested_preferred,
+        filter_csv,
+    )
+
+    if output_path is None:
+        output_path = f"{input_path.removesuffix('.csv')}_clean.csv"
+
+    result = filter_csv(input_path, output_path, dry_run=dry_run)
+    click.echo(
+        f"\n🔍 Preferred-share filter{' (DRY RUN)' if dry_run else ''}:\n"
+        f"  Input rows:    {result['input_rows']}\n"
+        f"  Output rows:   {result['output_rows']}\n"
+        f"  Dropped:       {len(result['dropped'])}\n"
+        f"  Kept (flag):   {len(result['kept_flagged'])}\n"
+        f"  Output file:   {output_path}"
+    )
+
+    if result["dropped"]:
+        click.echo("\n  Dropped preferred shares:")
+        for row in result["dropped"][:20]:
+            click.echo(
+                f"    - {row['ticker']} (CIK {row['cik']}): {row['company']}"
+            )
+        if len(result["dropped"]) > 20:
+            click.echo(f"    ... and {len(result['dropped']) - 20} more")
+
+    if result["kept_flagged"]:
+        click.echo("\n  ⚠️ Preferred shares KEPT (no plain sibling in CSV):")
+        for row in result["kept_flagged"][:10]:
+            click.echo(
+                f"    - {row['ticker']} (CIK {row['cik']}): {row['company']}"
+            )
+
+    if delete_ingested:
+        import asyncio
+
+        from fin_pipeline.db.connection import SurrealConnection
+
+        async def _run_cleanup():
+            async with SurrealConnection() as db:
+                # In dry-run mode no output CSV is written; the input still
+                # contains the plain sibling rows needed for the safety check.
+                cleanup_csv = input_path if dry_run else output_path
+                return await delete_ingested_preferred(
+                    db, cleanup_csv, dry_run=dry_run
+                )
+
+        try:
+            db_result = asyncio.run(_run_cleanup())
+        except (OSError, RuntimeError, ValueError) as exc:
+            click.echo(f"❌ DB cleanup failed: {exc}", err=True)
+            raise click.exceptions.Exit(2)
+
+        click.echo(
+            f"\n🗑️ DB cleanup{' (DRY RUN)' if dry_run else ''}:\n"
+            f"  Scanned preferred records: {db_result['scanned']}\n"
+            f"  Deleted:                   {db_result['deleted']}\n"
+            f"  Kept (no alternative):     {db_result['kept']}"
+        )
+        if db_result["deleted_filing_ids"]:
+            click.echo("  Deleted IDs:")
+            for filing_id in db_result["deleted_filing_ids"][:10]:
+                click.echo(f"    - {filing_id}")
+
+    click.echo("\n✨ Done")
+
+
 @main.command()
 @click.option(
     "--output-dir",
