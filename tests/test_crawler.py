@@ -5,6 +5,7 @@ from fin_pipeline.crawler import (
     scan_documents,
     scan_sec_edgar_html_directory,
 )
+from fin_pipeline.utils.crypto import calculate_file_hash
 
 
 def test_scan_directory_missing():
@@ -217,3 +218,120 @@ def test_scan_sec_edgar_html_directory_keeps_each_accession(tmp_path):
         "sec_BAC_0000000001-22-000001",
         "sec_BAC_0000000001-23-000001",
     }
+
+
+def _create_resume_pdfs(tmp_path):
+    paths = []
+    for name in ("one.pdf", "two.pdf", "three.pdf"):
+        path = tmp_path / name
+        path.write_bytes(f"%PDF-1.4 {name}".encode())
+        paths.append(path)
+    return paths
+
+
+def test_scan_directory_skip_existing(tmp_path, monkeypatch):
+    _create_resume_pdfs(tmp_path)
+    all_rows = list(scan_directory(str(tmp_path), recursive=False))
+    existing_id = all_rows[0][1]["filingId"]
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda _prefix: ({existing_id}, set()),
+    )
+
+    results = list(
+        scan_directory(str(tmp_path), recursive=False, skip_existing=True)
+    )
+
+    assert len(results) == 2
+    assert all(row[1]["filingId"] != existing_id for row in results)
+
+
+def test_scan_directory_skip_by_hash(tmp_path, monkeypatch):
+    paths = _create_resume_pdfs(tmp_path)
+    existing_hash = calculate_file_hash(str(paths[0]))
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda _prefix: (set(), {existing_hash}),
+    )
+
+    results = list(
+        scan_directory(str(tmp_path), recursive=False, skip_by_hash=True)
+    )
+
+    assert len(results) == 2
+    assert all(row[0] != str(paths[0]) for row in results)
+
+
+def test_scan_directory_skip_both(tmp_path, monkeypatch):
+    _create_resume_pdfs(tmp_path)
+    all_rows = list(scan_directory(str(tmp_path), recursive=False))
+    existing_id = all_rows[0][1]["filingId"]
+    another_hash = calculate_file_hash(all_rows[1][0])
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda _prefix: ({existing_id}, {another_hash}),
+    )
+
+    results = list(
+        scan_directory(
+            str(tmp_path),
+            recursive=False,
+            skip_existing=True,
+            skip_by_hash=True,
+        )
+    )
+
+    assert len(results) == 1
+    assert results[0][1]["filingId"] != existing_id
+    assert results[0][0] != all_rows[1][0]
+
+
+def test_scan_directory_no_flags_yields_all(tmp_path, monkeypatch):
+    _create_resume_pdfs(tmp_path)
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda _prefix: pytest.fail("preload should not run without skip flags"),
+    )
+
+    results = list(scan_directory(str(tmp_path), recursive=False))
+
+    assert len(results) == 3
+
+
+def test_scan_documents_skip_by_hash(tmp_path, monkeypatch):
+    pdf = tmp_path / "report.pdf"
+    html = tmp_path / "report.html"
+    pdf.write_bytes(b"%PDF-1.4 pdf report")
+    html.write_text("<html>already stored</html>")
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda prefix: (set(), {calculate_file_hash(str(html))}),
+    )
+
+    results = list(scan_documents(str(tmp_path), skip_by_hash=True))
+
+    assert len(results) == 1
+    assert results[0][0] == str(pdf)
+
+
+def test_scan_sec_edgar_html_directory_skip_existing(tmp_path, monkeypatch):
+    accession = "0000000001-24-000001"
+    filing_dir = (
+        tmp_path
+        / "sec-edgar-filings"
+        / "TEST"
+        / "10-K"
+        / accession
+    )
+    filing_dir.mkdir(parents=True)
+    (filing_dir / "primary-document.html").write_text("<html>filing</html>")
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda prefix: ({f"sec_TEST_{accession}"}, set()),
+    )
+
+    results = list(
+        scan_sec_edgar_html_directory(str(tmp_path), skip_existing=True)
+    )
+
+    assert results == []

@@ -1,3 +1,4 @@
+import hashlib
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -13,6 +14,7 @@ from fin_pipeline.sec_edgar import (
     _fetch_filing_html,
     _get_40f_exhibit_content,
     _parse_fy_end_month,
+    _stream_filings_from_csv,
     read_company_csv,
     stream_filings_from_csv,
 )
@@ -110,6 +112,92 @@ def test_stream_sets_cik_from_company(tmp_path, monkeypatch):
         results = list(stream_filings_from_csv(str(csv_path)))
 
     assert results[0][1]["cik"] == "0000320193"
+
+
+def _mock_stream_filing(tmp_path, monkeypatch, content="<html>resume</html>"):
+    csv_path = tmp_path / "companies.csv"
+    csv_path.write_text("ticker\nAAPL\n")
+    filing = SimpleNamespace(
+        accession_no="X",
+        html=lambda: content,
+        form="10-K",
+        company="Apple Inc.",
+        report_date="2025-09-27",
+        filing_date="2025-11-01",
+        cik=320193,
+    )
+    company = MagicMock()
+    company.cik = 320193
+    company.get_ticker.return_value = "AAPL"
+    company.get_filings.return_value = [filing]
+    fake_edgar = SimpleNamespace(
+        Company=MagicMock(return_value=company),
+        set_identity=MagicMock(),
+    )
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test test@example.com")
+    return csv_path, fake_edgar
+
+
+def test_stream_skip_existing(tmp_path, monkeypatch):
+    csv_path, fake_edgar = _mock_stream_filing(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda prefix: ({"sec_AAPL_X"}, set()),
+    )
+
+    with patch.dict("sys.modules", {"edgar": fake_edgar}):
+        results = list(_stream_filings_from_csv(str(csv_path), skip_existing=True))
+
+    assert results == []
+
+
+def test_stream_skip_by_hash(tmp_path, monkeypatch):
+    content = "<html>resume hash</html>"
+    csv_path, fake_edgar = _mock_stream_filing(tmp_path, monkeypatch, content)
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda _prefix: (set(), {content_hash}),
+    )
+
+    with patch.dict("sys.modules", {"edgar": fake_edgar}):
+        results = list(_stream_filings_from_csv(str(csv_path), skip_by_hash=True))
+
+    assert results == []
+
+
+def test_stream_skip_continues_when_new(tmp_path, monkeypatch):
+    csv_path, fake_edgar = _mock_stream_filing(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda _prefix: (set(), set()),
+    )
+
+    with patch.dict("sys.modules", {"edgar": fake_edgar}):
+        results = list(_stream_filings_from_csv(str(csv_path), skip_existing=True))
+
+    assert len(results) == 1
+    assert results[0][1]["filingId"] == "sec_AAPL_X"
+
+
+def test_stream_skip_existing_summary_logged(tmp_path, monkeypatch):
+    csv_path, fake_edgar = _mock_stream_filing(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "fin_pipeline.pipeline._load_existing_filings",
+        lambda _prefix: ({"sec_AAPL_X"}, set()),
+    )
+
+    with (
+        patch.dict("sys.modules", {"edgar": fake_edgar}),
+        patch("fin_pipeline.sec_edgar.log.info") as log_info,
+    ):
+        list(_stream_filings_from_csv(str(csv_path), skip_existing=True))
+
+    assert any(
+        "SEC resume summary" in call.args[0]
+        and "skipped 1 by ID" in call.args[0]
+        for call in log_info.call_args_list
+    )
 
 
 def test_stream_includes_fiscal_end_amendment_and_csv_industry(tmp_path, monkeypatch):

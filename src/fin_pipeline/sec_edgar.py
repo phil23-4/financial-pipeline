@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import html as html_module
 import json
 import os
@@ -281,6 +282,8 @@ def _stream_filings_from_csv(
     csv_path: str,
     year_range: tuple[int, int] | None = None,
     forms: list[str] | None = None,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ) -> Iterator[tuple[str, dict]]:
     """Fetch primary HTML documents and yield their content and metadata."""
     if not (os.getenv("EDGAR_IDENTITY") or EDGAR_IDENTITY):
@@ -292,6 +295,18 @@ def _stream_filings_from_csv(
     from edgar import Company, set_identity
 
     set_identity(os.getenv("EDGAR_IDENTITY") or EDGAR_IDENTITY)
+    if skip_existing or skip_by_hash:
+        from fin_pipeline.pipeline import _load_existing_filings
+
+        existing_ids, existing_hashes = _load_existing_filings("sec_")
+        log.info(
+            f"Resume check: {len(existing_ids)} sec_* filings already in DB"
+        )
+    else:
+        existing_ids, existing_hashes = set(), set()
+    skipped_by_id = 0
+    skipped_by_hash = 0
+
     for row in read_company_csv(csv_path):
         identifier = row.get("cik") or row.get("ticker")
         try:
@@ -408,16 +423,43 @@ def _stream_filings_from_csv(
                 "cik": str(company_cik).zfill(10) if company_cik is not None else None,
                 "exhibitSectionMap": json.dumps(section_map) if section_map else None,
             }
+            candidate_id = metadata["filingId"]
+            if skip_existing and candidate_id in existing_ids:
+                log.debug(f"Skipping {candidate_id} (already ingested)")
+                skipped_by_id += 1
+                continue
+            if skip_by_hash:
+                content_hash = hashlib.sha256(
+                    html_content.encode("utf-8", errors="replace")
+                ).hexdigest()
+                if content_hash in existing_hashes:
+                    log.debug(
+                        f"Skipping {candidate_id} (documentHash matches "
+                        "existing record)"
+                    )
+                    skipped_by_hash += 1
+                    continue
             yield html_content, metadata
+
+    if skip_existing or skip_by_hash:
+        log.info(
+            f"SEC resume summary: skipped {skipped_by_id} by ID, "
+            f"{skipped_by_hash} by hash"
+        )
 
 
 def fetch_filings_from_csv(
-    csv_path: str, download_dir: str
+    csv_path: str,
+    download_dir: str,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ) -> Iterator[tuple[Path, dict]]:
     """Fetch primary HTML documents and yield locally saved file/metadata pairs."""
     destination = Path(download_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    for html_content, metadata in _stream_filings_from_csv(csv_path):
+    for html_content, metadata in _stream_filings_from_csv(
+        csv_path, skip_existing=skip_existing, skip_by_hash=skip_by_hash
+    ):
         file_path = (
             destination
             / f"{metadata['companyTicker']}_{metadata['filingId'].removeprefix('sec_').removeprefix(metadata['companyTicker'] + '_')}_primary.html"
@@ -430,6 +472,14 @@ def stream_filings_from_csv(
     csv_path: str,
     year_range: tuple[int, int] | None = None,
     forms: list[str] | None = None,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ) -> Iterator[tuple[str, dict]]:
     """Yield SEC primary HTML content and metadata without writing to disk."""
-    return _stream_filings_from_csv(csv_path, year_range=year_range, forms=forms)
+    return _stream_filings_from_csv(
+        csv_path,
+        year_range=year_range,
+        forms=forms,
+        skip_existing=skip_existing,
+        skip_by_hash=skip_by_hash,
+    )

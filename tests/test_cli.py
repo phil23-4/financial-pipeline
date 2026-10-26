@@ -233,6 +233,18 @@ def test_scan_command_passes_dry_run(tmp_path):
     assert "Dry run completed" in result.output
 
 
+def test_scan_command_passes_resume_flags(tmp_path):
+    with patch("fin_pipeline.cli.process_entire_directory") as process:
+        result = CliRunner().invoke(
+            main,
+            ["scan", str(tmp_path), "--skip-existing", "--skip-by-hash"],
+        )
+
+    assert result.exit_code == 0
+    assert process.call_args.kwargs["skip_existing"] is True
+    assert process.call_args.kwargs["skip_by_hash"] is True
+
+
 def test_scan_mixed_command_passes_dry_run(tmp_path):
     with patch("fin_pipeline.cli.process_mixed_directory") as process:
         result = CliRunner().invoke(
@@ -243,6 +255,18 @@ def test_scan_mixed_command_passes_dry_run(tmp_path):
     assert process.call_args.kwargs["dry_run"] is True
     assert process.call_args.kwargs["ocr_enabled"] is False
     assert "Dry run completed" in result.output
+
+
+def test_scan_mixed_command_passes_resume_flags(tmp_path):
+    with patch("fin_pipeline.cli.process_mixed_directory") as process:
+        result = CliRunner().invoke(
+            main,
+            ["scan-mixed", str(tmp_path), "--skip-existing", "--skip-by-hash"],
+        )
+
+    assert result.exit_code == 0
+    assert process.call_args.kwargs["skip_existing"] is True
+    assert process.call_args.kwargs["skip_by_hash"] is True
 
 
 def test_sec_html_command_passes_dry_run(tmp_path):
@@ -279,6 +303,123 @@ def test_sec_stream_command_passes_dry_run(tmp_path):
 
     assert result.exit_code == 0
     assert process.call_args.kwargs["dry_run"] is True
+
+
+def test_sec_stream_command_passes_resume_flags(tmp_path):
+    csv_path = tmp_path / "companies.csv"
+    csv_path.write_text("ticker,cik\nTLV,123\n")
+    with patch(
+        "fin_pipeline.cli.process_sec_edgar_csv_stream", return_value=True
+    ) as process:
+        result = CliRunner().invoke(
+            main,
+            [
+                "sec-edgar-stream",
+                str(csv_path),
+                "--skip-existing",
+                "--skip-by-hash",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert process.call_args.kwargs["skip_existing"] is True
+    assert process.call_args.kwargs["skip_by_hash"] is True
+
+
+def test_file_skip_existing_flag(tmp_path, monkeypatch):
+    document = tmp_path / "report.pdf"
+    document.write_bytes(b"%PDF-1.4")
+    parse_document = patch(
+        "fin_pipeline.pipeline.parse_document",
+        side_effect=AssertionError("existing record should not be parsed"),
+    )
+    monkeypatch.setattr(
+        "fin_pipeline.db.db.surreal_query",
+        lambda _query: [{"result": [{"filingId": "already-ingested"}]}],
+    )
+
+    with parse_document as mocked_parser:
+        result = CliRunner().invoke(
+            main,
+            [
+                "file",
+                str(document),
+                "--filing-id",
+                "already-ingested",
+                "--ticker",
+                "AAPL",
+                "--type",
+                "10-K",
+                "--skip-existing",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    mocked_parser.assert_not_called()
+
+
+def test_file_force_overrides_skip(tmp_path):
+    document = tmp_path / "report.pdf"
+    document.write_bytes(b"%PDF-1.4")
+
+    with (
+        patch(
+            "fin_pipeline.cli.run_ingestion_pipeline", return_value=True
+        ) as run_pipeline,
+        patch("fin_pipeline.db.db.surreal_query") as query,
+    ):
+        result = CliRunner().invoke(
+            main,
+            [
+                "file",
+                str(document),
+                "--filing-id",
+                "local_report",
+                "--ticker",
+                "AAPL",
+                "--type",
+                "10-K",
+                "--skip-existing",
+                "--skip-by-hash",
+                "--force",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert run_pipeline.call_args.kwargs["skip_existing"] is False
+    query.assert_not_called()
+
+
+def test_file_skip_by_hash(tmp_path, monkeypatch):
+    document = tmp_path / "report.pdf"
+    document.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr(
+        "fin_pipeline.utils.crypto.calculate_file_hash", lambda _path: "a" * 64
+    )
+    monkeypatch.setattr(
+        "fin_pipeline.db.db.surreal_query",
+        lambda _query: [{"result": [{"filingId": "existing-hash"}]}],
+    )
+
+    with patch("fin_pipeline.cli.run_ingestion_pipeline") as run_pipeline:
+        result = CliRunner().invoke(
+            main,
+            [
+                "file",
+                str(document),
+                "--filing-id",
+                "local_report",
+                "--ticker",
+                "AAPL",
+                "--type",
+                "10-K",
+                "--skip-by-hash",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Skipping (hash matches existing-hash)" in result.output
+    run_pipeline.assert_not_called()
 
 
 def test_xbrl_bulk_reports_unavailable_quarters_and_summary(tmp_path, monkeypatch):

@@ -116,6 +116,19 @@ PDF OCR is enabled by default for `scan`, `scan-mixed`, and `file`; pass
 `--no-ocr` to disable it, or use `--ocr` to explicitly enable it. In mixed
 directories, this setting affects PDFs only.
 
+For resumable ingestion, pass `--skip-existing` to skip records already stored
+under the same filing ID. `--skip-by-hash` also skips exact document-hash
+matches, which is useful when local files have been renamed. These flags are
+available on `scan`, `scan-mixed`, `sec-edgar-html`, `sec-edgar-csv`,
+`sec-edgar-stream`, and `file`. For example:
+
+```bash
+fin-pipeline scan /path/to/financial_docs --source LOCAL --skip-existing --skip-by-hash
+fin-pipeline sec-edgar-stream ./companies.csv --year-range 2018-2025 --forms 10-K,10-Q --skip-existing
+```
+
+For a single `file` command, `--force` overrides both skip flags.
+
 ## Metadata extraction behavior
 
 The pipeline currently tries to extract metadata from both HTML and PDF input in a consistent way.

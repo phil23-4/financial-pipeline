@@ -12,6 +12,7 @@ from fin_pipeline.db import relations
 from fin_pipeline.db.connection import SurrealConnection
 from fin_pipeline.models.schemas import ExchangeFilingModel
 from fin_pipeline.pipeline import (
+    _load_existing_filings,
     process_mixed_directory,
     process_sec_edgar_csv_stream,
     run_html_content_pipeline,
@@ -26,6 +27,31 @@ from fin_pipeline.utils.html_parser import (
     parse_html_content,
 )
 from fin_pipeline.utils.xbrl_facts import extract_xbrl_facts
+
+
+def test_load_existing_filings_uses_surrealql_starts_with():
+    response = [
+        {
+            "result": [
+                {
+                    "filingId": "sec_AAPL_1",
+                    "documentHash": "hash-a",
+                },
+                {"filingId": "sec_MSFT_2", "documentHash": None},
+                {"filingId": "local_report_3", "documentHash": "other-hash"},
+            ]
+        }
+    ]
+
+    with patch("fin_pipeline.db.db.surreal_query", return_value=response) as query:
+        filing_ids, hashes = _load_existing_filings("sec_")
+
+    query.assert_called_once_with(
+        "SELECT filingId, documentHash FROM exchange_filing "
+        "WHERE string::starts_with(filingId, 'sec_');"
+    )
+    assert filing_ids == {"sec_AAPL_1", "sec_MSFT_2"}
+    assert hashes == {"hash-a"}
 
 
 def test_classify_source_type():
@@ -571,6 +597,7 @@ async def _run_schema_placeholder_ingestion(
     route,
     include_xbrl=False,
     parsed_result=None,
+    skip_existing=False,
 ):
     db = AsyncMock()
     connection_context = AsyncMock()
@@ -629,7 +656,11 @@ async def _run_schema_placeholder_ingestion(
         document_path = tmp_path / f"placeholder.{extension}"
         document_path.write_text("<html><body>Test filing</body></html>")
         completed = await run_ingestion_pipeline(
-            metadata, str(document_path), source="SEC", ocr_enabled=False
+            metadata,
+            str(document_path),
+            source="SEC",
+            ocr_enabled=False,
+            skip_existing=skip_existing,
         )
     else:
         completed = await run_html_content_pipeline(
@@ -1309,3 +1340,78 @@ async def test_cik_strips_non_digits(tmp_path, monkeypatch):
     )
 
     assert record["cik"] == "0000320193"
+
+
+@pytest.mark.asyncio
+async def test_run_ingestion_skip_existing_hits_db(tmp_path, monkeypatch):
+    document = tmp_path / "skip.pdf"
+    document.write_bytes(b"%PDF-1.4")
+    parse_document = MagicMock(side_effect=AssertionError("must not parse"))
+    monkeypatch.setattr("fin_pipeline.pipeline.parse_document", parse_document)
+    monkeypatch.setattr(
+        "fin_pipeline.db.db.surreal_query",
+        MagicMock(return_value=[{"result": [{"filingId": "existing"}]}]),
+    )
+
+    completed = await run_ingestion_pipeline(
+        {
+            "filingId": "existing",
+            "companyTicker": "AAPL",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+        },
+        str(document),
+        source="SEC",
+        skip_existing=True,
+    )
+
+    assert completed is True
+    parse_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_ingestion_skip_existing_proceeds_when_new(
+    tmp_path, monkeypatch
+):
+    query = MagicMock(return_value=[{"result": []}])
+    monkeypatch.setattr("fin_pipeline.db.db.surreal_query", query)
+
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "new-filing",
+            "companyTicker": "AAPL",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+        },
+        tmp_path,
+        monkeypatch,
+        "file",
+        skip_existing=True,
+    )
+
+    assert record["filingId"] == "new-filing"
+    query.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_run_ingestion_no_skip_by_default(tmp_path, monkeypatch):
+    query = MagicMock()
+    monkeypatch.setattr("fin_pipeline.db.db.surreal_query", query)
+
+    record = await _run_schema_placeholder_ingestion(
+        {
+            "filingId": "no-skip-default",
+            "companyTicker": "AAPL",
+            "stockCode": "UNKNOWN",
+            "exchange": "UNKNOWN",
+            "filingType": "10-K",
+        },
+        tmp_path,
+        monkeypatch,
+        "file",
+    )
+
+    assert record["filingId"] == "no-skip-default"
+    query.assert_not_called()

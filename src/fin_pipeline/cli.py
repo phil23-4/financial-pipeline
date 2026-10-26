@@ -55,7 +55,17 @@ def main():
     "--ocr/--no-ocr", default=True, show_default=True, help="Enable or disable PDF OCR."
 )
 @click.option("--dry-run", is_flag=True, help="Parse and validate without database writes.")
-def scan(dir_path: str, source: str, concurrency: int, ocr: bool, dry_run: bool):
+@click.option("--skip-existing", is_flag=True, help="Skip filings already in the DB by filingId")
+@click.option("--skip-by-hash", is_flag=True, help="Skip files whose documentHash already exists")
+def scan(
+    dir_path: str,
+    source: str,
+    concurrency: int,
+    ocr: bool,
+    dry_run: bool,
+    skip_existing: bool,
+    skip_by_hash: bool,
+):
     """Recursively scan a local folder for PDFs and pipe them to SurrealDB."""
     click.echo(f"📂 Scanning target directory: {dir_path}")
     asyncio.run(
@@ -65,6 +75,8 @@ def scan(dir_path: str, source: str, concurrency: int, ocr: bool, dry_run: bool)
             concurrency_limit=concurrency,
             dry_run=dry_run,
             ocr_enabled=ocr,
+            skip_existing=skip_existing,
+            skip_by_hash=skip_by_hash,
         )
     )
     click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Directory processing task successfully closed out.")
@@ -88,8 +100,16 @@ def scan(dir_path: str, source: str, concurrency: int, ocr: bool, dry_run: bool)
     "--ocr/--no-ocr", default=True, show_default=True, help="Enable or disable PDF OCR."
 )
 @click.option("--dry-run", is_flag=True, help="Parse and validate without database writes.")
+@click.option("--skip-existing", is_flag=True, help="Skip filings already in the DB by filingId")
+@click.option("--skip-by-hash", is_flag=True, help="Skip files whose documentHash already exists")
 def scan_mixed(
-    dir_path: str, source: str, concurrency: int, ocr: bool, dry_run: bool
+    dir_path: str,
+    source: str,
+    concurrency: int,
+    ocr: bool,
+    dry_run: bool,
+    skip_existing: bool,
+    skip_by_hash: bool,
 ):
     """Recursively scan a local folder for both PDFs and HTML files."""
     click.echo(f"📂 Scanning mixed document directory: {dir_path}")
@@ -100,6 +120,8 @@ def scan_mixed(
             concurrency_limit=concurrency,
             dry_run=dry_run,
             ocr_enabled=ocr,
+            skip_existing=skip_existing,
+            skip_by_hash=skip_by_hash,
         )
     )
     click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ Mixed directory processing task successfully closed out.")
@@ -117,7 +139,15 @@ def scan_mixed(
     help="Max simultaneous HTML processing tasks",
 )
 @click.option("--dry-run", is_flag=True, help="Parse and validate without database writes.")
-def sec_edgar_html(dir_path: str, concurrency: int, dry_run: bool):
+@click.option("--skip-existing", is_flag=True, help="Skip filings already in the DB by filingId")
+@click.option("--skip-by-hash", is_flag=True, help="Skip files whose documentHash already exists")
+def sec_edgar_html(
+    dir_path: str,
+    concurrency: int,
+    dry_run: bool,
+    skip_existing: bool,
+    skip_by_hash: bool,
+):
     """Process SEC Edgar HTML filings from local directory structure.
 
     Expected structure: {dir_path}/sec-edgar-filings/{TICKER}/{FILING_TYPE}/{ACCESSION_NUMBER}/primary-document.html
@@ -127,7 +157,12 @@ def sec_edgar_html(dir_path: str, concurrency: int, dry_run: bool):
     click.echo(f"📂 Scanning SEC Edgar HTML directory: {dir_path}")
     asyncio.run(
         process_sec_edgar_html_directory(
-            dir_path, source_type="SEC", concurrency_limit=concurrency, dry_run=dry_run
+            dir_path,
+            source_type="SEC",
+            concurrency_limit=concurrency,
+            dry_run=dry_run,
+            skip_existing=skip_existing,
+            skip_by_hash=skip_by_hash,
         )
     )
     click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ SEC Edgar HTML processing task successfully closed out.")
@@ -142,10 +177,26 @@ def sec_edgar_html(dir_path: str, concurrency: int, dry_run: bool):
     help="Directory for downloaded primary HTML documents",
 )
 @click.option("--dry-run", is_flag=True, help="Download, parse, and validate without database writes.")
-def sec_edgar_csv(csv_path: str, download_dir: str, dry_run: bool):
+@click.option("--skip-existing", is_flag=True, help="Skip filings already in the DB by filingId")
+@click.option("--skip-by-hash", is_flag=True, help="Skip files whose documentHash already exists")
+def sec_edgar_csv(
+    csv_path: str,
+    download_dir: str,
+    dry_run: bool,
+    skip_existing: bool,
+    skip_by_hash: bool,
+):
     """Fetch SEC filings for ticker/CIK rows in a CSV and ingest them."""
     click.echo(f"📄 Reading SEC company list: {csv_path}")
-    completed = asyncio.run(process_sec_edgar_csv(csv_path, download_dir=download_dir, dry_run=dry_run))
+    completed = asyncio.run(
+        process_sec_edgar_csv(
+            csv_path,
+            download_dir=download_dir,
+            dry_run=dry_run,
+            skip_existing=skip_existing,
+            skip_by_hash=skip_by_hash,
+        )
+    )
     if completed is False:
         raise click.ClickException("SEC CSV processing failed.")
     click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ SEC CSV processing task successfully closed out.")
@@ -156,7 +207,16 @@ def sec_edgar_csv(csv_path: str, download_dir: str, dry_run: bool):
 @click.option("--year-range", help="Inclusive filing year range, for example 2018-2025")
 @click.option("--forms", help="Comma-separated SEC forms, for example 10-K,10-Q")
 @click.option("--dry-run", is_flag=True, help="Fetch, parse, and validate without database writes.")
-def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None, dry_run: bool):
+@click.option("--skip-existing", is_flag=True, help="Skip filings already in the DB by filingId")
+@click.option("--skip-by-hash", is_flag=True, help="Skip filings whose documentHash already exists")
+def sec_edgar_stream(
+    csv_path: str,
+    year_range: str | None,
+    forms: str | None,
+    dry_run: bool,
+    skip_existing: bool,
+    skip_by_hash: bool,
+):
     """Fetch SEC filings from a CSV and ingest HTML directly from memory."""
     parsed_year_range = None
     if year_range:
@@ -180,7 +240,16 @@ def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None, d
             "must contain at least one SEC form", param_hint="--forms"
         )
     click.echo(f"🌐 Streaming SEC company list: {csv_path}")
-    completed = asyncio.run(process_sec_edgar_csv_stream(csv_path, parsed_year_range, parsed_forms, dry_run=dry_run))
+    completed = asyncio.run(
+        process_sec_edgar_csv_stream(
+            csv_path,
+            parsed_year_range,
+            parsed_forms,
+            dry_run=dry_run,
+            skip_existing=skip_existing,
+            skip_by_hash=skip_by_hash,
+        )
+    )
     if completed is False:
         raise click.ClickException("SEC streaming processing failed.")
     click.echo("🧪 Dry run completed; no database changes were made." if dry_run else "✨ SEC streaming task successfully closed out.")
@@ -212,6 +281,9 @@ def sec_edgar_stream(csv_path: str, year_range: str | None, forms: str | None, d
     is_flag=True,
     help="Parse and validate the file without writing to SurrealDB.",
 )
+@click.option("--skip-existing", is_flag=True, help="Skip if filingId already exists in DB")
+@click.option("--skip-by-hash", is_flag=True, help="Skip if documentHash already exists in DB")
+@click.option("--force", is_flag=True, help="Re-ingest even when existing skip flags are set")
 def file(
     file_path: str,
     filing_id: str,
@@ -223,6 +295,9 @@ def file(
     source: str,
     ocr: bool,
     dry_run: bool,
+    skip_existing: bool,
+    skip_by_hash: bool,
+    force: bool,
 ):
     """Ingest a single explicit file (PDF or HTML) with provided structured metadata."""
     filing_type = normalize_filing_type(filing_type)
@@ -235,10 +310,41 @@ def file(
         "filingType": filing_type,
         "sourceType": classify_source_type(filing_type),
     }
+    if force:
+        skip_existing = False
+        skip_by_hash = False
+    elif skip_by_hash:
+        from fin_pipeline.db.db import surreal_query
+        from fin_pipeline.utils.crypto import calculate_file_hash
+
+        document_hash = calculate_file_hash(file_path)
+        try:
+            rows = surreal_query(
+                "SELECT filingId FROM exchange_filing "
+                f"WHERE documentHash = '{document_hash}';"
+            )
+            if isinstance(rows, dict) and rows.get("error"):
+                raise RuntimeError(rows["error"])
+            if isinstance(rows, list) and rows and rows[0].get("status") == "ERR":
+                raise RuntimeError(str(rows[0].get("result")))
+            existing = rows[0].get("result", []) if rows else []
+            if existing:
+                click.echo(
+                    f"⏭️  Skipping (hash matches {existing[0].get('filingId')})"
+                )
+                return
+        except (OSError, RuntimeError, ValueError) as exc:
+            log.warning(f"Hash skip check failed: {exc}; proceeding with ingestion")
+
     click.echo(f"📥 Processing individual file: {os.path.basename(file_path)}")
     completed = asyncio.run(
         run_ingestion_pipeline(
-            metadata, file_path, source=source, dry_run=dry_run, ocr_enabled=ocr
+            metadata,
+            file_path,
+            source=source,
+            dry_run=dry_run,
+            ocr_enabled=ocr,
+            skip_existing=skip_existing,
         )
     )
     if not completed:

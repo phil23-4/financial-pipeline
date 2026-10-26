@@ -210,7 +210,11 @@ def _parse_local_pdf_metadata(
 
 
 def scan_directory(
-    dir_path: str, recursive: bool = True, fiscal_year_end_month: int = 12
+    dir_path: str,
+    recursive: bool = True,
+    fiscal_year_end_month: int = 12,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ) -> Generator[tuple[str, dict[str, Any]], None, None]:
     """Scans local directories for financial PDF assets and prepares baseline meta attributes."""
     if not os.path.isdir(dir_path):
@@ -222,6 +226,18 @@ def scan_directory(
         else os.path.join(dir_path, "*.pdf")
     )
     pdf_files = glob.glob(search_pattern, recursive=recursive)
+    if skip_existing or skip_by_hash:
+        from fin_pipeline.pipeline import _load_existing_filings
+
+        existing_ids, existing_hashes = _load_existing_filings("local_")
+        log.info(f"Resume check: {len(existing_ids)} local_* filings already in DB")
+    else:
+        existing_ids, existing_hashes = set(), set()
+
+    total_scanned = 0
+    total_yielded = 0
+    skipped_by_id = 0
+    skipped_by_hash = 0
 
     for file_path in pdf_files:
         filename = os.path.basename(file_path)
@@ -229,16 +245,19 @@ def scan_directory(
 
         try:
             file_hash = calculate_file_hash(file_path)
+            full_hash = file_hash
             short_hash = file_hash[:8]
         except OSError as e:
             log.debug(f"Hash calculation failed for {file_path}: {e}")
+            full_hash = None
             short_hash = str(os.path.getsize(file_path))
 
         local_metadata = _parse_local_pdf_metadata(
             file_path, base_name, fiscal_year_end_month
         )
+        filing_id = f"local_{base_name}_{short_hash}"
         metadata = {
-            "filingId": f"local_{base_name}_{short_hash}",
+            "filingId": filing_id,
             "companyTicker": local_metadata["companyTicker"],
             "stockCode": local_metadata["stockCode"],
             "exchange": LOCAL_EXCHANGE,
@@ -260,11 +279,35 @@ def scan_directory(
                 **local_metadata["metadataConfidence"],
             },
         }
+        total_scanned += 1
+        if skip_existing and filing_id in existing_ids:
+            log.debug(f"Skipping {file_path} (filingId exists)")
+            skipped_by_id += 1
+            continue
+        if skip_by_hash and full_hash and full_hash in existing_hashes:
+            log.debug(
+                f"Skipping {file_path} (documentHash matches existing record; "
+                "file may have been renamed)"
+            )
+            skipped_by_hash += 1
+            continue
+        total_yielded += 1
         yield file_path, metadata
+
+    if skip_existing or skip_by_hash:
+        log.info(
+            f"Scan resume summary: {total_scanned} scanned, "
+            f"{total_yielded} yielded, {skipped_by_id} skipped by ID, "
+            f"{skipped_by_hash} skipped by hash"
+        )
 
 
 def scan_documents(
-    dir_path: str, recursive: bool = True, fiscal_year_end_month: int = 12
+    dir_path: str,
+    recursive: bool = True,
+    fiscal_year_end_month: int = 12,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ) -> Generator[tuple[str, dict[str, Any]], None, None]:
     """Scan local directories for PDF and HTML assets."""
     if not os.path.isdir(dir_path):
@@ -273,6 +316,19 @@ def scan_documents(
     search_pattern = (
         os.path.join(dir_path, "**", "*") if recursive else os.path.join(dir_path, "*")
     )
+    if skip_existing or skip_by_hash:
+        from fin_pipeline.pipeline import _load_existing_filings
+
+        existing_ids, existing_hashes = _load_existing_filings("local_")
+        log.info(f"Resume check: {len(existing_ids)} local_* filings already in DB")
+    else:
+        existing_ids, existing_hashes = set(), set()
+
+    total_scanned = 0
+    total_yielded = 0
+    skipped_by_id = 0
+    skipped_by_hash = 0
+
     for file_path in glob.glob(search_pattern, recursive=recursive):
         if not os.path.isfile(file_path) or os.path.splitext(file_path)[
             1
@@ -287,16 +343,19 @@ def scan_documents(
         base_name, _ = os.path.splitext(filename)
         try:
             file_hash = calculate_file_hash(file_path)
+            full_hash = file_hash
             short_hash = file_hash[:8]
         except OSError as e:
             log.debug(f"Hash calculation failed for {file_path}: {e}")
+            full_hash = None
             short_hash = str(os.path.getsize(file_path))
 
         local_metadata = _parse_local_pdf_metadata(
             file_path, base_name, fiscal_year_end_month
         )
+        filing_id = f"local_{base_name}_{short_hash}"
         metadata = {
-            "filingId": f"local_{base_name}_{short_hash}",
+            "filingId": filing_id,
             "companyTicker": local_metadata["companyTicker"],
             "stockCode": local_metadata["stockCode"],
             "exchange": LOCAL_EXCHANGE,
@@ -318,11 +377,33 @@ def scan_documents(
                 **local_metadata["metadataConfidence"],
             },
         }
+        total_scanned += 1
+        if skip_existing and filing_id in existing_ids:
+            log.debug(f"Skipping {file_path} (filingId exists)")
+            skipped_by_id += 1
+            continue
+        if skip_by_hash and full_hash and full_hash in existing_hashes:
+            log.debug(
+                f"Skipping {file_path} (documentHash matches existing record; "
+                "file may have been renamed)"
+            )
+            skipped_by_hash += 1
+            continue
+        total_yielded += 1
         yield file_path, metadata
+
+    if skip_existing or skip_by_hash:
+        log.info(
+            f"Scan resume summary: {total_scanned} scanned, "
+            f"{total_yielded} yielded, {skipped_by_id} skipped by ID, "
+            f"{skipped_by_hash} skipped by hash"
+        )
 
 
 def scan_sec_edgar_html_directory(
     base_path: str,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ) -> Generator[tuple[str, dict[str, Any]], None, None]:
     """Scan SEC Edgar HTML directory structure.
 
@@ -341,6 +422,19 @@ def scan_sec_edgar_html_directory(
     if not os.path.isdir(sec_edgar_root):
         # Try treating base_path as the direct root
         sec_edgar_root = base_path
+
+    if skip_existing or skip_by_hash:
+        from fin_pipeline.pipeline import _load_existing_filings
+
+        existing_ids, existing_hashes = _load_existing_filings("sec_")
+        log.info(f"Resume check: {len(existing_ids)} sec_* filings already in DB")
+    else:
+        existing_ids, existing_hashes = set(), set()
+
+    total_scanned = 0
+    total_yielded = 0
+    skipped_by_id = 0
+    skipped_by_hash = 0
 
     # Walk through: sec-edgar-filings/TICKER/FILING_TYPE/ACCESSION_NUMBER/
     for ticker_dir in os.listdir(sec_edgar_root):
@@ -371,6 +465,25 @@ def scan_sec_edgar_html_directory(
                 if os.path.isfile(html_file):
                     # Create filing ID from accession number
                     filing_id = f"sec_{ticker}_{accession_number}"
+                    total_scanned += 1
+                    if skip_existing and filing_id in existing_ids:
+                        log.debug(f"Skipping {html_file} (filingId exists)")
+                        skipped_by_id += 1
+                        continue
+
+                    if skip_by_hash:
+                        try:
+                            file_hash = calculate_file_hash(html_file)
+                        except OSError as exc:
+                            log.debug(f"Hash calculation failed for {html_file}: {exc}")
+                            file_hash = None
+                        if file_hash and file_hash in existing_hashes:
+                            log.debug(
+                                f"Skipping {html_file} (documentHash matches existing "
+                                "record; file may have been renamed)"
+                            )
+                            skipped_by_hash += 1
+                            continue
 
                     metadata = {
                         "filingId": filing_id,
@@ -402,4 +515,12 @@ def scan_sec_edgar_html_directory(
                         },
                     }
 
+                    total_yielded += 1
                     yield html_file, metadata
+
+    if skip_existing or skip_by_hash:
+        log.info(
+            f"Scan resume summary: {total_scanned} scanned, "
+            f"{total_yielded} yielded, {skipped_by_id} skipped by ID, "
+            f"{skipped_by_hash} skipped by hash"
+        )

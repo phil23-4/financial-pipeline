@@ -35,6 +35,43 @@ from fin_pipeline.utils.sections import (
 _xbrl_bulk_cache: dict[tuple[str, str], Any] | None = None
 
 
+def _load_existing_filings(prefix: str) -> tuple[set[str], set[str]]:
+    """Load existing filing IDs and non-empty document hashes for a prefix."""
+    from fin_pipeline.db.db import surreal_query
+
+    escaped_prefix = prefix.replace("\\", "\\\\").replace("'", "\\'")
+    try:
+        rows = surreal_query(
+            "SELECT filingId, documentHash FROM exchange_filing "
+            f"WHERE string::starts_with(filingId, '{escaped_prefix}');"
+        )
+        if isinstance(rows, dict) and rows.get("error"):
+            raise RuntimeError(rows["error"])
+        if isinstance(rows, list) and any(
+            isinstance(row, dict) and row.get("status") == "ERR" for row in rows
+        ):
+            raise RuntimeError("SurrealDB query returned an error")
+        result = rows[0].get("result", []) if rows else []
+    except Exception as exc:  # noqa: BLE001 - preload is best effort by design
+        log.warning(
+            f"Could not preload existing {prefix}* filings: {exc}; "
+            "skip flags will have no effect this run"
+        )
+        return set(), set()
+
+    matching_rows = [
+        row
+        for row in result
+        if isinstance(row.get("filingId"), str)
+        and row["filingId"].startswith(prefix)
+    ]
+    filing_ids = {row["filingId"] for row in matching_rows}
+    document_hashes = {
+        row["documentHash"] for row in matching_rows if row.get("documentHash")
+    }
+    return filing_ids, document_hashes
+
+
 def _ensure_source_type(payload: dict) -> None:
     source_type = payload.get("sourceType")
     if source_type is None or (
@@ -241,6 +278,7 @@ async def run_ingestion_pipeline(
     dry_run: bool = False,
     llm_callable: Callable[[str], str] | None = None,
     ocr_enabled: bool = True,
+    skip_existing: bool = False,
 ) -> bool:
     """Execute complete document ingestion pipeline with extraction, validation, and database commit.
 
@@ -260,6 +298,30 @@ async def run_ingestion_pipeline(
         bool: True if processing completed successfully, False otherwise
     """
     filing_id = _resolve_filing_id(metadata_input, file_path)
+    if skip_existing:
+        from fin_pipeline.db.db import surreal_query
+
+        try:
+            rows = surreal_query(
+                "SELECT filingId FROM exchange_filing "
+                f"WHERE filingId = {json.dumps(filing_id)};"
+            )
+            if isinstance(rows, dict) and rows.get("error"):
+                raise RuntimeError(rows["error"])
+            if isinstance(rows, list) and any(
+                isinstance(row, dict) and row.get("status") == "ERR"
+                for row in rows
+            ):
+                raise RuntimeError("SurrealDB query returned an error")
+            existing = rows[0].get("result", []) if rows else []
+            if existing:
+                log.info(f"Skipping {filing_id} (already ingested)")
+                return True
+        except Exception as exc:  # noqa: BLE001 - skip check failure must not block ingest
+            log.warning(
+                f"Skip check failed for {filing_id}: {exc}; "
+                "proceeding with ingestion"
+            )
     start_time = time.time()
 
     log.info(
@@ -596,6 +658,8 @@ async def process_entire_directory(
     concurrency_limit: int = 3,
     dry_run: bool = False,
     ocr_enabled: bool = True,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ):
     """Recursively scan and ingest all documents from directory with concurrent processing.
 
@@ -631,7 +695,12 @@ async def process_entire_directory(
                 errors.append(error_msg)
 
     tasks = []
-    for file_path, generated_meta in scan_directory(dir_path, recursive=True):
+    for file_path, generated_meta in scan_directory(
+        dir_path,
+        recursive=True,
+        skip_existing=skip_existing,
+        skip_by_hash=skip_by_hash,
+    ):
         tasks.append(worker(file_path, generated_meta))
 
     if not tasks:
@@ -653,6 +722,8 @@ async def process_mixed_directory(
     dry_run: bool = False,
     llm_callable: Callable[[str], str] | None = None,
     ocr_enabled: bool = True,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ):
     """Recursively ingest both PDF and HTML files from a local directory."""
     if not os.path.isdir(dir_path):
@@ -684,7 +755,12 @@ async def process_mixed_directory(
 
     tasks = [
         worker(file_path, generated_meta)
-        for file_path, generated_meta in scan_documents(dir_path, recursive=True)
+        for file_path, generated_meta in scan_documents(
+            dir_path,
+            recursive=True,
+            skip_existing=skip_existing,
+            skip_by_hash=skip_by_hash,
+        )
     ]
     if not tasks:
         log.warning("🔍 No PDF or HTML assets detected inside target folder path.")
@@ -702,6 +778,8 @@ async def process_sec_edgar_html_directory(
     source_type: str = "SEC",
     concurrency_limit: int = 3,
     dry_run: bool = False,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ):
     """Process SEC Edgar HTML filings sequentially from directory structure.
 
@@ -711,7 +789,11 @@ async def process_sec_edgar_html_directory(
 
     file_count = 0
     try:
-        for file_path, generated_meta in scan_sec_edgar_html_directory(dir_path):
+        for file_path, generated_meta in scan_sec_edgar_html_directory(
+            dir_path,
+            skip_existing=skip_existing,
+            skip_by_hash=skip_by_hash,
+        ):
             file_count += 1
             log.info(f"📄 Processing filing {file_count}: {file_path}")
             completed = await run_ingestion_pipeline(
@@ -737,7 +819,11 @@ async def process_sec_edgar_html_directory(
 
 
 async def process_sec_edgar_csv(
-    csv_path: str, download_dir: str = "sec_downloads", dry_run: bool = False
+    csv_path: str,
+    download_dir: str = "sec_downloads",
+    dry_run: bool = False,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ):
     """Fetch and ingest SEC filings listed in a CSV, sequentially."""
     from fin_pipeline.sec_edgar import fetch_filings_from_csv
@@ -751,7 +837,12 @@ async def process_sec_edgar_csv(
         return False
 
     processed = 0
-    for file_path, metadata in fetch_filings_from_csv(csv_path, download_dir):
+    for file_path, metadata in fetch_filings_from_csv(
+        csv_path,
+        download_dir,
+        skip_existing=skip_existing,
+        skip_by_hash=skip_by_hash,
+    ):
         processed += 1
         log.info(f"📄 Processing downloaded SEC filing {processed}: {file_path}")
         if not await run_ingestion_pipeline(
@@ -769,16 +860,21 @@ async def process_sec_edgar_csv_stream(
     year_range: tuple[int, int] | None = None,
     forms: list[str] | None = None,
     dry_run: bool = False,
+    skip_existing: bool = False,
+    skip_by_hash: bool = False,
 ):
     """Fetch and ingest SEC filings from CSV without local files."""
     from fin_pipeline.sec_edgar import SecEdgarFetchError, stream_filings_from_csv
 
     processed = 0
-    skipped = 0
     failed = 0
     try:
         for html_content, metadata in stream_filings_from_csv(
-            csv_path, year_range=year_range, forms=forms
+            csv_path,
+            year_range=year_range,
+            forms=forms,
+            skip_existing=skip_existing,
+            skip_by_hash=skip_by_hash,
         ):
             processed += 1
             if not await run_html_content_pipeline(
@@ -795,6 +891,6 @@ async def process_sec_edgar_csv_stream(
         return False
 
     log.info(
-        f"📋 SEC stream summary: processed={processed}, skipped={skipped}, failed={failed}."
+        f"📋 SEC stream summary: processed={processed}, failed={failed}."
     )
     return True
