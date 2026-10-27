@@ -50,7 +50,7 @@ xbrl_bulk/
 
 DATA_MAPPING_RECOMMENDATION.md
 IMPLEMENTATION_SUMMARY.md
-README copy.md
-Modelfile
 data/analytics_data/LOCK
 data/analytics_data/manifest/*.manifest
+docs/_FACTS.md
+AGENTS.md

@@ -1,24 +1,67 @@
 # Financial Pipeline Extractor (`fin_pipeline`)
 
-`fin_pipeline` is a Python ingestion pipeline for financial filings. It reads local PDFs and HTML filings, extracts text and tables, validates the output, and persists structured filing records and graph relationships into SurrealDB.
+`fin_pipeline` is a Python ingestion pipeline for financial filings. It reads
+local PDFs and HTML filings, extracts text and tables, validates the output,
+and persists structured filing records and graph relationships into SurrealDB.
 
-The current implementation supports:
+The pipeline supports the Forbes Global 2000 corpus (2,000 companies, fiscal
+years 2018–2025). It handles two disclosure sources: SEC EDGAR filings
+(Form 10-K, 20-F, 40-F) with XBRL-tagged financial facts, and glossy annual
+reports (PDFs from company websites) that require OCR and heuristic
+extraction. Structured filings receive section-level labels and canonical
+XBRL facts; glossy reports receive text and chunk extraction for narrative
+analysis.
 
-- PDF ingestion with PyMuPDF4LLM Markdown extraction and native hybrid OCR
-- HTML/XBRL extraction for SEC-style filings
-- Filing metadata extraction for company name, filing date, form type, exchange, and CIK
-- Camelot table extraction into structured Markdown records with page, row, header, and accuracy metadata
+## Current implementation supports
+
+- PDF ingestion via PyMuPDF4LLM (Markdown structure preservation) with
+  optional hybrid OCR (RapidOCR detection + Tesseract recognition)
+- HTML/Inline-XBRL extraction for SEC-style filings via BeautifulSoup
+- Filing metadata extraction: company name, filing date, period end date,
+  form type, exchange, CIK, LEI, ISIN, CUSIP, SEDOL, language, page count
+- Camelot table extraction (lattice-first, stream-fallback) with page,
+  row, header, and accuracy metadata
+- Section labeling for Form 10-K and 20-F via Item header regex
+- XBRL fact extraction from SEC bulk datasets (companyfacts.zip and
+  quarterly FSDS archives), with 17 canonical concepts
 - Graph creation for company and filing relationships in SurrealDB
-- Retry-aware database calls, connection pooling, and stale-record cleanup
+- Post-ingestion enrichment: GICS industry codes, reportingYear backfill,
+  CIK backfill
+- Retry-aware database calls, connection pooling, resumable batches
+- Structured JSON logging via loguru
 
 ## Project purpose
 
-This package is designed for financial-document processing pipelines that need to:
+This package is designed for research-grade financial-document processing
+pipelines that need to:
 
-- ingest SEC-style filings and private PDF reports
-- normalize extracted text and tables into a consistent schema
-- maintain a graph of company and filing relationships in SurrealDB
-- support local ingestion workflows and SEC filing retrieval workflows
+- ingest SEC filings and private PDF reports into a unified schema
+- preserve page-level provenance for narrative analysis
+- extract financial facts from standardized XBRL taxonomies
+- maintain a graph of company and filing relationships
+- support resumable batch ingestion across thousands of documents
+
+## System requirements and pre-flight configuration
+
+**CRITICAL: SurrealDB HTTP body limits must be raised before ingestion.**
+SurrealDB 3.x defaults to 4 MiB on `/rpc` and 1 MiB on `/sql`. Many SEC
+filings exceed these limits (for example, large bank Form 20-F filings can
+reach 6–7 MB of JSON payload). Writes will be rejected with HTTP 413
+without these settings:
+
+```bash
+SURREAL_HTTP_MAX_RPC_BODY_SIZE=128MiB \
+SURREAL_HTTP_MAX_SQL_BODY_SIZE=16MiB \
+SURREAL_LOG_FILE_ENABLED=true \
+surreal start surrealkv:data/analytics_data --log info
+```
+
+The 128 MiB `/rpc` limit provides approximately 20× headroom over the
+largest observed filing and 5× over the estimated worst case in the Forbes
+2000 corpus. The 16 MiB `/sql` limit covers metadata-only writes.
+
+Python 3.12 is the tested version. Python 3.11+ is declared as a minimum
+in `pyproject.toml`, but only 3.12 is exercised in CI and local development.
 
 ## Current architecture
 
@@ -26,275 +69,239 @@ This package is designed for financial-document processing pipelines that need t
 financial-pipeline/
 ├── pyproject.toml
 ├── README.md
+├── AGENTS.md                       # durable instructions for doc generation
+├── data/
+│   └── industry_mapping.csv        # GICS codes (curation artifact)
+├── docs/                           # design, ops, and debugging docs
 ├── src/
 │   └── fin_pipeline/
 │       ├── __init__.py
-│       ├── cli.py
-│       ├── crawler.py
-│       ├── pipeline.py
-│       ├── sec_edgar.py
+│       ├── cli.py                  # click-based CLI
+│       ├── crawler.py              # local directory scanning
+│       ├── enrichment.py           # post-ingestion GICS + backfills
+│       ├── export.py               # Parquet export
+│       ├── pipeline.py             # orchestration
+│       ├── preferred_filter.py     # preferred-share ticker filter
+│       ├── sec_edgar.py            # EDGAR client + 40-F exhibit concat
 │       ├── config/
 │       │   ├── __init__.py
 │       │   ├── constants.py
-│       │   ├── logger.py
-│       │   ├── settings.py
+│       │   ├── logger.py           # reads FIN_PIPELINE_LOG_* vars
+│       │   ├── settings.py         # reads SURREAL_*, EDGAR_* vars
 │       │   └── structured_logging.py
 │       ├── db/
 │       │   ├── __init__.py
-│       │   ├── connection.py
+│       │   ├── connection.py       # HTTP adapter, merge(), retries
 │       │   ├── connection_pool.py
-│       │   ├── db.py
-│       │   └── relations.py
+│       │   ├── db.py               # schema DDL, query helpers
+│       │   └── relations.py        # graph edges
 │       ├── models/
 │       │   ├── __init__.py
-│       │   └── schemas.py
+│       │   └── schemas.py          # ExchangeFilingModel, etc.
 │       └── utils/
 │           ├── __init__.py
+│           ├── classify.py         # filing type → sourceType
 │           ├── crypto.py
 │           ├── db_utils.py
 │           ├── html_parser.py
+│           ├── metadata.py
 │           ├── pdf_parser.py
-│           └── retry.py
-├── tests/
-│   ├── conftest.py
-│   ├── test_crawler.py
-│   ├── test_cli.py
-│   ├── test_pipeline.py
-│   ├── test_pdf_parser.py
-│   ├── test_sec_edgar.py
-│   └── __init__.py
-└── .env.example (if present in your local checkout)
+│           ├── retry.py
+│           ├── sections.py         # section labeling
+│           ├── xbrl_bulk.py        # bulk download + Parquet cache
+│           └── xbrl_facts.py       # per-filing fallback extractor
+└── tests/
+    ├── conftest.py
+    ├── test_cli.py
+    ├── test_crawler.py
+    ├── test_enrichment.py
+    ├── test_pdf_parser.py
+    ├── test_pipeline.py
+    ├── test_preferred_filter.py
+    ├── test_sec_edgar.py
+    ├── test_schema_integration.py
+    └── test_xbrl_bulk.py
 ```
 
 ## Key capabilities
 
-- **PDF ingestion**: `parse_pdf_layout()` uses `pymupdf4llm` to preserve headings, emphasis, lists, and document structure in Markdown
-- **PDF table extraction**: `camelot-py` uses lattice extraction first and stream extraction as a fallback, producing normalized Markdown tables and string-only headers
-- **Native hybrid OCR**: PyMuPDF4LLM automatically detects scanned or incomplete text layers and uses `rapidtess_api.exec_ocr`, combining RapidOCR region detection with Tesseract recognition while preserving layout
-- **HTML/XBRL parsing**: `parse_html_file()` and related helpers parse document text and Inline XBRL metadata via BeautifulSoup
-- **Metadata normalization**: common fields are normalized across PDF and HTML sources:
-  - `stockName`
-  - `filingDate`
-  - `filingType`
-  - `exchange`
-  - `cik`
-- **Folder-aware local scanning**: structured local PDF paths and filenames provide company, stock code, report type, and reporting year metadata before document parsing
-- **Markdown cleanup**: repeated page headers and footers are removed, bullets are normalized, and spacing is consolidated
-- **Graph persistence**: ingested records can create company and filing entities and relationships in SurrealDB
-- **Pipeline resilience**: repeated network/database calls use retry logic; pooled connections are supported; stale records are cleaned before overwrite
-- **Structured logging**: `loguru` writes human-readable terminal output and JSON log files
+- **PDF ingestion**: `parse_pdf_layout()` in `utils/pdf_parser.py` uses
+  `pymupdf4llm.to_markdown(..., page_chunks=True)` to preserve headings,
+  emphasis, lists, and document structure in Markdown. Page-level chunks
+  retain page numbers for provenance.
+- **PDF table extraction**: `camelot-py` is invoked with the lattice flavor
+  first and the stream flavor as fallback. Each table is normalized to
+  Markdown with string-only headers, escaped cells, and an accuracy metric
+  from Camelot's parsing report.
+- **Hybrid OCR**: PyMuPDF4LLM detects scanned or incomplete text layers and
+  invokes `rapidtess_api.exec_ocr`, combining RapidOCR region detection with
+  Tesseract recognition while preserving layout. OCR is **opt-in per page**
+  by default; force-OCR (`--ocr` or `force_ocr=True`) applies it to every
+  page. `--no-ocr` disables it entirely.
+- **HTML/Inline XBRL parsing**: `parse_html_file()` uses BeautifulSoup.
+  Hidden containers (`<ix:header>`, `<ix:hidden>`, `<ix:references>`,
+  `display:none` elements) are decomposed before text extraction, so
+  taxonomy URLs do not pollute visible text. Text extraction uses `\n` as
+  a tag separator to preserve header boundaries for section labeling.
+- **Metadata normalization**: nine fields are extracted from both HTML and
+  PDF sources — `stockName`, `filingDate`, `filingType`, `exchange`, `cik`,
+  `lei`, `isin`, `cusip`, `sedol` — with per-field source tags and
+  confidence scores recorded in `metadataSources` and `metadataConfidence`.
+- **Section labeling**: `utils/sections.py::label_sections_structured`
+  matches Form 10-K Item headers (1, 1A, 7, 8) and Form 20-F Item headers
+  (3.D, 4, 5, 6, 8, 15) to six canonical labels: `business`,
+  `risk_factors`, `mdna`, `financial_statements`, `corporate_governance`,
+  `other`. Section labels are **not applied to Form 40-F** (see Known
+  Limitations).
+- **XBRL fact extraction**: `utils/xbrl_bulk.py` downloads
+  `companyfacts.zip` (~1.4 GB) and quarterly FSDS archives from SEC, parses
+  them locally, and writes a Parquet cache keyed on
+  `(accession_no, concept)`. At ingestion time, `xbrlFacts` is populated by
+  cache lookup — no per-filing HTTP requests.
+- **Enrichment**: `enrichment.py::enrich_industry_codes` reads
+  `data/industry_mapping.csv`, does a three-tier lookup (CIK → companyKey
+  → ticker), and writes `gicsCode`, `gicsSector`, `industryConfidence`.
+  Also backfills `reportingYear` from `periodEndDate` and `cik` from a
+  ticker-to-CIK CSV.
+- **Preferred-share filter**: `preferred_filter.py` detects tickers like
+  `GS-PD`, `C-PR`, `MS-PA` (dash + 2+ uppercase letters). Only drops rows
+  when a plain-ticker sibling exists in the same CSV; preserves dual-class
+  common shares (`BRK-A`, `BRK-B`, `BF-A`, `BF-B`).
+- **Graph persistence**: `relations.py::establish_graph_relations` creates
+  `has_filing` (company → filing) and `references_filing` (filing →
+  referenced company) edges. Company nodes are keyed by
+  SHA256(uppercase ticker + normalized name) to disambiguate same-ticker
+  companies.
+- **Resumability**: `--skip-existing` skips filings already in the DB by
+  `filingId`; `--skip-by-hash` also skips content-hash matches, catching
+  renamed or moved PDFs. Both flags work on all batch commands.
 
-## Directory behavior and ingestion flow
+## Ingestion flows
 
-The processing pipeline is organized as follows:
+### SEC streaming (`sec-edgar-stream`)
 
-1. Detect input type
-   - PDF or HTML
-2. Parse document content
-   - PDF text/tables and metadata
-   - HTML text/tables and Inline XBRL metadata
-3. Validate payload
-   - Pydantic schema validation in `models/schemas.py`
-4. Persist filing record
-   - SurrealDB insert/upsert logic
-5. Create graph relations
-   - `has_filing` and `references_filing` edges
-6. Clean stale or partial data
-   - avoids leaving incomplete prior versions behind
+1. Pre-load existing `sec_*` filingIds and documentHashes (resume)
+2. For each CSV row, resolve CIK, call edgartools `get_filings(form=...)`
+3. For Form 40-F: concatenate `EX-99.*` exhibits with `<h1>` markers
+4. Otherwise: fetch primary HTML via `filing.html()`
+5. Compute `documentHash`, apply skip filters
+6. Parse via `run_html_content_pipeline`: extract text, metadata, chunks,
+   sections; load XBRL facts from bulk cache; validate; persist
 
-To process a local folder containing a mixture of PDF and HTML documents, use:
+### PDF scanning (`scan`, `scan-mixed`, `file`)
 
-```bash
-fin-pipeline scan-mixed /path/to/documents --source LOCAL
-```
+1. Pre-load existing `local_*` filingIds and hashes (resume)
+2. For each PDF: compute SHA-256, derive filingId as
+   `local_{basename}_{hash[:8]}`
+3. Infer metadata from parent directory and filename
+4. Parse via `parse_pdf_layout`: Markdown text, tables, OCR as needed
+5. Detect language with `langdetect` on first 5,000 chars
+6. Persist
 
-The command recursively discovers both `.pdf` and `.html` files, routes each
-file to its matching parser, and supports `--concurrency` and `--dry-run` like
-the existing directory commands. The `scan` command remains PDF-only, while
-`sec-edgar-html` remains specialized for SEC Edgar directory layouts.
-PDF OCR is enabled by default for `scan`, `scan-mixed`, and `file`; pass
-`--no-ocr` to disable it, or use `--ocr` to explicitly enable it. In mixed
-directories, this setting affects PDFs only.
+### Bulk XBRL download (`xbrl-bulk`)
 
-For resumable ingestion, pass `--skip-existing` to skip records already stored
-under the same filing ID. `--skip-by-hash` also skips exact document-hash
-matches, which is useful when local files have been renamed. These flags are
-available on `scan`, `scan-mixed`, `sec-edgar-html`, `sec-edgar-csv`,
-`sec-edgar-stream`, and `file`. For example:
+1. Download `companyfacts.zip` to `xbrl_bulk/` if absent
+2. Download quarterly FSDS archives for the requested year range
+3. Parse each archive, filter to target CIK list, extract 17 canonical
+   concepts with instant-vs-duration and priority-order selection
+4. Write `xbrl_bulk/xbrl_facts.parquet`
+5. Completed archives receive `.done` checkpoints and are reused
 
-```bash
-fin-pipeline scan /path/to/financial_docs --source LOCAL --skip-existing --skip-by-hash
-fin-pipeline sec-edgar-stream ./companies.csv --year-range 2018-2025 --forms 10-K,10-Q --skip-existing
-```
+## Metadata extraction
 
-For a single `file` command, `--force` overrides both skip flags.
+### HTML
 
-## Metadata extraction behavior
+Reads Inline XBRL tags via BeautifulSoup: `EntityRegistrantName` (stockName),
+`DocumentPeriodEndDate` (periodEndDate, filingDate), `DocumentType`
+(filingType), `EntityCentralIndexKey` (cik), `CurrentFiscalYearEndDate`
+(fiscalYearEndMonth). Function:
+`utils/html_parser.py::extract_filing_metadata`.
 
-The pipeline currently tries to extract metadata from both HTML and PDF input in a consistent way.
+### PDF
 
-### HTML metadata
+Two-step: embedded PDF properties (`pymupdf.Document.metadata`), then
+regex on cleaned Markdown text. Extracts company names near legal suffixes
+("Inc", "Corp", "LLC"), form types (10-K, 10-Q, 8-K, 20-F, etc.), dates,
+CIK values, and exchange names via `EXCHANGE_MAPPING`. Dates normalized
+to `YYYY-MM-DD` before validation.
 
-The HTML parser reads common Inline XBRL values such as:
+### Precedence
 
-- `EntityRegistrantName`
-- `DocumentPeriodEndDate`
-- `DocumentType`
-- `EntityCentralIndexKey`
+Caller-supplied metadata is authoritative. The pipeline fills missing
+fields from parsed output only when the caller value is empty, null, or
+`UNKNOWN`. This allows the parser to act as a recovery path without
+overwriting trusted metadata.
 
-The extraction is performed by `extract_filing_metadata()` in `src/fin_pipeline/utils/html_parser.py`.
+### Local PDF naming conventions
 
-### PDF text and table extraction
-
-PDF text is extracted with `pymupdf4llm.to_markdown(..., page_chunks=True)` so page content can retain Markdown structure such as headings, bold text, and lists. PyMuPDF4LLM's native hybrid OCR uses `rapidtess_api.exec_ocr` for scanned or incomplete text layers. Post-processing removes repeated page furniture, normalizes bullet characters, and fixes excess whitespace.
-
-Tables are extracted with Camelot using the lattice flavor first and the stream flavor when lattice extraction is unavailable. Each table includes normalized `headers`, `rowCount`, `pageNumber`, `accuracy`, and Markdown content. Table cells are whitespace-normalized and escaped for safe Markdown rendering.
-
-By default, `parse_pdf_layout(path)` lets PyMuPDF4LLM use OCR selectively when it determines a page needs it, without forcing OCR on pages that already have usable text. Pass `force_ocr=True` to OCR every page, including pages with a native text layer. The CLI's `--no-ocr` option disables OCR and uses native text extraction only. PDF metadata is read from the same `pymupdf.Document` used for Markdown extraction, avoiding duplicate PDF I/O.
-
-### PDF metadata
-
-The PDF parser tries a two-step approach:
-
-1. embedded PDF properties (`pymupdf.Document.metadata`)
-2. regex-based extraction from the cleaned Markdown text
-
-This includes detection for:
-
-- company names near "Inc", "Corp", "LLC", etc.
-- filing types such as `10-K`, `10-Q`, `8-K`, `S-1`, `S-3`, `S-4`
-- dates like `As of December 31, 2025`
-- CIK values in text such as `CIK: 0000320193`
-- exchange names via the configured exchange mapping
-
-The PDF parser normalizes dates to `YYYY-MM-DD` before validation.
-
-### Caller precedence rules
-
-Metadata supplied by the caller remains authoritative. The pipeline only fills missing values from parsed output when the provided value is empty, null, or `UNKNOWN`.
-
-This allows local extraction to act as a recovery path without overwriting trusted upstream metadata.
-
-### Local PDF naming convention
-
-The local scanner recognizes paths such as:
-
-```text
-Filings Data/
-└── romania/
-   └── Banca Transilvania/
-      └── 131662.ar.en.2018.pdf
-```
-
-From this layout it populates:
-
-| Metadata field | Source                              | Example              |
-| -------------- | ----------------------------------- | -------------------- |
-| `stockName`    | Immediate parent directory          | `Banca Transilvania` |
-| `stockCode`    | Filename prefix                     | `131662`             |
-| `filingType`   | Filename report code                | `ANNUAL_REPORT`      |
-| `filingDate`   | Filename year, inferred as year-end | `2018-12-31`         |
-| `exchange`     | Local source default                | `LOCAL_FS`           |
-
-The supported filename pattern is:
-
-```text
-{stock_code}.{ar|annual_report}.{language}.{year}.pdf
-```
-
-Ticker and exchange cannot be inferred reliably from this layout, so they remain `UNKNOWN` and `LOCAL_FS` respectively unless supplied through another metadata source. Files that do not match the pattern retain the scanner defaults.
-
-For mixed local scans, an uppercase ticker-like immediate parent folder (for example, `TLV` or `AAPL`) is also used as `companyTicker` when the filename does not provide it. Company-name folders with spaces or lowercase names are not treated as tickers.
-
-The scanner also supports country/ticker directories with structured filenames:
+`scan` and `scan-mixed` recognize structured paths:
 
 ```text
 Filings Data/
 └── romania/
-   └── TLV/
-      └── banca_transilvania_2020_131662_ar_en_5.pdf
+    └── Banca Transilvania/
+        └── 131662.ar.en.2018.pdf
 ```
 
-For this layout, the ticker is read from the immediate parent directory (`TLV`), while the company name, year, stock code, and annual-report type are read from the filename.
+Populated metadata:
 
-## Requirements
+| Field | Source | Example |
+|---|---|---|
+| `stockName` | Immediate parent directory | `Banca Transilvania` |
+| `stockCode` | Filename prefix | `131662` |
+| `filingType` | Filename report code | `ANNUAL_REPORT` |
+| `filingDate` | Filename year, inferred as year-end | `2018-12-31` |
+| `exchange` | Local source default | `LOCAL_FS` |
 
-### System dependencies
+Supported filename pattern: `{stock_code}.{ar|annual_report}.{language}.{year}.pdf`.
 
-The project expects Tesseract OCR to be installed on the host machine. RapidOCR is installed as a Python dependency.
-
-For Ubuntu/Debian:
-
-```bash
-sudo apt-get update && sudo apt-get install -y tesseract-ocr
-```
-
-For macOS with Homebrew:
-
-```bash
-brew install tesseract
-```
-
-### Python requirements
-
-Python 3.11+ is required. PDF processing uses:
-
-- `pymupdf4llm` for structured Markdown text extraction
-- `camelot-py` for table extraction
-- PyMuPDF for PDF metadata and document access
-- `rapidocr-onnxruntime` and the system Tesseract installation for hybrid OCR
+For country/ticker layouts, the ticker is read from an uppercase
+parent directory (`TLV`, `AAPL`) while other fields come from the filename.
 
 ## Installation
 
-Install the package in the usual way:
-
 ```bash
+# Base install
 pip install .
-```
 
-Development installation:
-
-```bash
+# Development (adds pytest, ruff, etc.)
 pip install -e ".[dev]"
-```
 
-Optional SEC enrichment helpers:
-
-```bash
+# SEC metadata enrichment (edgartools)
 pip install -e ".[sec]"
-```
 
-Optional SEC bulk XBRL downloads and Parquet output:
-
-```bash
+# SEC bulk XBRL downloads and Parquet output
 pip install -e ".[xbrl-bulk]"
-fin-pipeline xbrl-bulk --start-year 2018 --end-year 2025 --cik-csv companies.csv
+
+# Optional language detection for PDFs
+pip install langdetect
 ```
 
-The CIK CSV must contain a `cik` column. Omitting `--cik-csv` processes all
-available CIKs and can require substantial disk space and memory. Set a valid
-SEC contact identity in `src/fin_pipeline/utils/xbrl_bulk.py` before running
-the downloader. Downloads and parsing report progress in the logs. Successfully
-parsed archives receive `.done` checkpoints and are reused on later runs;
-incomplete temporary downloads are replaced automatically. Use `--force` to
-download the requested archives again. FSDS quarters not yet published (404)
-are skipped, and the command reports how many quarters were available.
+System dependencies: Tesseract OCR must be installed on the host.
+`brew install tesseract` on macOS, `apt install tesseract-ocr` on Debian/Ubuntu.
 
 ## Environment configuration
 
-The project reads a mix of environment variables and `.env` values via `src/fin_pipeline/config/settings.py`.
+Environment variables are read by two modules:
 
-| Variable                 | Purpose                                                  | Typical value                      |
-| ------------------------ | -------------------------------------------------------- | ---------------------------------- |
-| `SURREAL_ENDPOINT`       | SurrealDB HTTP endpoint                                  | `http://127.0.0.1:8000`            |
-| `SURREAL_USER`           | SurrealDB username                                       | `root`                             |
-| `SURREAL_PASS`           | SurrealDB password                                       | `secret`                           |
-| `SURREAL_NAMESPACE`      | SurrealDB namespace                                      | `finance`                          |
-| `SURREAL_DATABASE`       | SurrealDB database                                       | `analytics`                        |
-| `COMPANY_TABLE`          | Company table name used by the pipeline                  | `company`                          |
-| `EDGAR_IDENTITY`         | SEC User-Agent string for optional edgartools enrichment | `Your Name your.email@example.com` |
-| `FIN_PIPELINE_LOG_LEVEL` | Loguru log level                                         | `INFO`                             |
-| `FIN_PIPELINE_LOG_DIR`   | Directory for JSON logs                                  | `logs`                             |
+- `config/settings.py` reads `SURREAL_*`, `COMPANY_TABLE`, `EDGAR_IDENTITY`,
+  and the project log path used for diagnostic files.
+- `config/logger.py` reads `FIN_PIPELINE_LOG_LEVEL` and
+  `FIN_PIPELINE_LOG_DIR` at import time.
+
+| Variable | Read by | Purpose | Typical value |
+|---|---|---|---|
+| `SURREAL_ENDPOINT` | `settings.py` | SurrealDB HTTP endpoint | `http://127.0.0.1:8000` |
+| `SURREAL_USER` | `settings.py` | SurrealDB username | `root` |
+| `SURREAL_PASS` | `settings.py` | SurrealDB password | `secret` |
+| `SURREAL_NAMESPACE` | `settings.py` | SurrealDB namespace | `finance` |
+| `SURREAL_DATABASE` | `settings.py` | SurrealDB database | `analytics` |
+| `SURREAL_HTTP_MAX_RPC_BODY_SIZE` | **SurrealDB server** | Max body size on `/rpc` | `128MiB` (required) |
+| `SURREAL_HTTP_MAX_SQL_BODY_SIZE` | **SurrealDB server** | Max body size on `/sql` | `16MiB` (required) |
+| `COMPANY_TABLE` | `settings.py` | Company table name | `company` |
+| `EDGAR_IDENTITY` | `settings.py` | SEC User-Agent with contact email | `Your Name your.email@example.com` |
+| `FIN_PIPELINE_LOG_LEVEL` | `logger.py` | Loguru log level | `INFO` |
+| `FIN_PIPELINE_LOG_DIR` | `logger.py` | Directory for JSON logs | `logs` |
 
 Example `.env`:
 
@@ -310,60 +317,92 @@ FIN_PIPELINE_LOG_LEVEL=INFO
 FIN_PIPELINE_LOG_DIR=logs
 ```
 
+The SurrealDB body-size limits are set on the **SurrealDB server process**,
+not the pipeline. See "System requirements" above for the exact invocation.
+
 ## CLI usage
 
-The package exposes the `fin-pipeline` command via the entry point in `pyproject.toml`.
+### Batch ingestion
 
-### 1. Scan a local folder of filings
+**Scan a local folder of PDFs:**
 
 ```bash
 fin-pipeline scan /path/to/financial_docs --source LOCAL --concurrency 4
 ```
 
-This recursively scans a directory, detects file types, and ingests supported documents.
+**Scan a mixed PDF and HTML folder:**
 
-### 2. Process SEC Edgar HTML filing directories
+```bash
+fin-pipeline scan-mixed /path/to/documents --source LOCAL
+```
+
+**Process SEC EDGAR HTML directory layout:**
 
 ```bash
 fin-pipeline sec-edgar-html /path/to/sec_filings --concurrency 4
 ```
 
-This expects a structure similar to:
-
-```text
-sec_filings/
-└── sec-edgar-filings/
-    ├── AAPL/
-    │   └── 10-K/
-    │       └── 0000320193-25-000079/
-    │           └── primary-document.html
-    └── MSFT/
-        └── 10-K/
-            └── 0000789019-25-000091/
-                └── primary-document.html
-```
-
-### 3. Process a CSV of ticker or CIK references
+**Fetch and ingest SEC filings from a CSV (writes HTML to disk):**
 
 ```bash
 fin-pipeline sec-edgar-csv ./companies.csv --download-dir ./sec_downloads
 ```
 
-The CSV can include `ticker` and/or `cik`, and optional `forms`, `year`, and `max_filings` columns.
-
-### 4. Stream SEC filings from CSV without writing HTML to disk
+**Stream SEC filings from a CSV (no disk writes):**
 
 ```bash
-fin-pipeline sec-edgar-stream ./companies.csv --year-range 2018-2025 --forms 10-K,10-Q
+fin-pipeline sec-edgar-stream ./companies.csv \
+    --year-range 2018-2025 \
+    --forms 10-K,20-F,40-F \
+    --skip-existing
 ```
 
-### 5. Ingest a single explicit file
+**Download and parse SEC bulk XBRL data:**
+
+```bash
+fin-pipeline xbrl-bulk --start-year 2018 --end-year 2025 \
+    --cik-csv companies.csv
+```
+
+The CIK CSV must include a `cik` column. Omitting `--cik-csv` processes all
+available CIKs. Pass `--force` to re-download archives that already have
+`.done` checkpoints. FSDS quarters not yet published return HTTP 404 and
+are skipped.
+
+**Post-ingestion enrichment:**
+
+```bash
+fin-pipeline enrich --mapping data/industry_mapping.csv
+```
+
+Populates `gicsCode`, `gicsSector`, `industryConfidence` from the mapping
+CSV, backfills `reportingYear` from `periodEndDate`, and backfills `cik`
+from a ticker-to-CIK CSV if provided. Idempotent — safe to re-run.
+
+**Filter preferred-share tickers from a CSV:**
+
+```bash
+fin-pipeline filter-preferred --input sec_companies.csv --dry-run
+fin-pipeline filter-preferred --input sec_companies.csv
+```
+
+Detects tickers like `GS-PD`, `C-PR`, `MS-PA` and drops them **only when a
+plain-ticker sibling exists** in the same CSV. Preserves `BRK-A`, `BRK-B`,
+`BF-A`, `BF-B` (dual-class common shares).
+
+**Export DB to Parquet:**
+
+```bash
+fin-pipeline export --output-dir ./export
+```
+
+### Single-file ingestion
 
 ```bash
 fin-pipeline file ./downloads/apple_10k.pdf \
   --filing-id "sec_0000320193_2026_10K" \
   --ticker "AAPL" \
-   --stock-name "Apple Inc." \
+  --stock-name "Apple Inc." \
   --stock-code "320193" \
   --exchange "NASDAQ" \
   --type "10-K" \
@@ -371,18 +410,25 @@ fin-pipeline file ./downloads/apple_10k.pdf \
   --no-ocr
 ```
 
-OCR is enabled by default. Use `--no-ocr` to skip OCR when processing PDFs, or `--ocr` to explicitly turn it on. When the legal company name is known from the filing source, pass it with `--stock-name`. This value is treated as authoritative; PDF extraction is used only when the field is omitted.
+`--stock-name` is treated as authoritative; PDF extraction is used only when
+the field is omitted. `--force` overrides both `--skip-existing` and
+`--skip-by-hash` for a single-file ingestion.
 
-### 6. Ingest a single HTML filing with metadata
+### Resumable batches
+
+`--skip-existing` and `--skip-by-hash` are available on `scan`, `scan-mixed`,
+`sec-edgar-html`, `sec-edgar-csv`, `sec-edgar-stream`, and `file`. They pre-load
+existing filing IDs and content hashes at batch start (one DB query) and skip
+matching files at yield time. Re-running an aborted batch resumes from where it
+stopped, not from the beginning.
 
 ```bash
-fin-pipeline file ./downloads/filing.html \
-  --filing-id "sec_manual_filing" \
-  --ticker "AAPL" \
-  --type "10-K"
+fin-pipeline scan /path/to/pdfs --source LOCAL --skip-existing --skip-by-hash
+fin-pipeline sec-edgar-stream ./companies.csv --year-range 2018-2025 \
+    --forms 10-K,20-F,40-F --skip-existing
 ```
 
-## Python API usage
+## Python API
 
 ```python
 import asyncio
@@ -398,152 +444,235 @@ async def main():
         "referencedTickers": ["AAPL", "NVDA", "ASML"],
     }
 
-    await run_ingestion_pipeline(custom_metadata, "./tsmc_annual.pdf", source="SEC")
+    await run_ingestion_pipeline(
+        custom_metadata, "./tsmc_annual.pdf", source="SEC"
+    )
 
     await process_entire_directory(
         "/shared/network/pdf_drop",
         source_type="LOCAL",
         concurrency_limit=2,
+        skip_existing=True,
+        skip_by_hash=True,
     )
 
 asyncio.run(main())
 ```
 
-## Data model and SurrealDB schema
+## Data model
 
-The ingestion process maps data into a SurrealDB schema that includes a company node table and a filing table, plus graph relations.
+The pipeline writes to three tables in SurrealDB, all `SCHEMAFULL`:
 
-Example schema concepts:
+- `exchange_filing` — one record per ingested filing
+- `company` — one record per legal entity, keyed on a deterministic hash
+- `has_filing` / `references_filing` — graph edges
+
+`ExchangeFilingModel` (in `models/schemas.py`) declares the full schema.
+Fields fall into eight groups: identity, classification, temporal, document
+content, extracted data, enrichment, provenance, processing.
+
+Seven fields are stored as **JSON-encoded strings**, not native SurrealDB
+objects: `documentChunks`, `documentTables`, `xbrlFacts`, `xbrlProvenance`,
+`metadataSources`, `metadataConfidence`, `exhibitSectionMap`. This is
+required because SurrealDB 2.x/3.x coerces strings matching `word:word` into
+RecordID references during `CONTENT` writes, which rejects valid filing
+text (e.g., `Note:Unless`, `M:68` in mortality tables). Read paths decode
+with `encoding::json::decode(field)` in SurrealQL or `json.loads()` in
+Python.
+
+See `docs/DESIGN_RATIONALE.md` §4 for the full field list and §10.2 for the
+JSON-encoding decision rationale.
+
+### Schema excerpt
+
+The `db.py::_build_schema_sql()` function is the authoritative schema DDL.
+The excerpt below covers only the highest-traffic fields. See
+`docs/DESIGN_RATIONALE.md` Appendix A for the complete definition.
 
 ```surrealql
-DEFINE TABLE company SCHEMAFULL;
-DEFINE FIELD ticker ON TABLE company TYPE string;
-DEFINE FIELD companyName ON TABLE company TYPE option<string>;
-DEFINE FIELD exchange ON TABLE company TYPE option<string>;
-DEFINE FIELD companyKey ON TABLE company TYPE option<string>;
-DEFINE FIELD updatedAt ON TABLE company TYPE option<datetime>;
-DEFINE INDEX idx_company_ticker_lookup ON TABLE company COLUMNS ticker;
-DEFINE INDEX idx_company_key ON TABLE company COLUMNS companyKey UNIQUE;
-
 DEFINE TABLE exchange_filing SCHEMAFULL;
-DEFINE FIELD filingId ON TABLE exchange_filing TYPE string;
-DEFINE FIELD companyTicker ON TABLE exchange_filing TYPE string;
-DEFINE FIELD stockName ON TABLE exchange_filing TYPE option<string>;
-DEFINE FIELD filingType ON TABLE exchange_filing TYPE string;
-DEFINE FIELD sourceType ON TABLE exchange_filing TYPE string DEFAULT "unknown";
-DEFINE FIELD reportingYear ON TABLE exchange_filing TYPE option<int>;
-DEFINE FIELD documentText ON TABLE exchange_filing TYPE option<string>;
-DEFINE FIELD documentChunks ON TABLE exchange_filing TYPE option<string>;
-DEFINE FIELD documentTables ON TABLE exchange_filing TYPE option<string>;
-DEFINE FIELD xbrlFacts ON TABLE exchange_filing TYPE option<string>;
-DEFINE FIELD referencedTickers ON TABLE exchange_filing TYPE option<array<string>>;
-DEFINE FIELD documentStatus ON TABLE exchange_filing TYPE option<string>;
-DEFINE FIELD updatedAt ON TABLE exchange_filing TYPE datetime;
 
-DEFINE TABLE has_filing SCHEMAFULL TYPE RELATION IN company OUT exchange_filing;
-DEFINE TABLE references_filing SCHEMAFULL TYPE RELATION IN exchange_filing OUT company;
+-- Identity
+DEFINE FIELD IF NOT EXISTS filingId     ON TABLE exchange_filing TYPE string;
+DEFINE FIELD IF NOT EXISTS companyTicker ON TABLE exchange_filing TYPE string;
+DEFINE FIELD IF NOT EXISTS cik           ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS stockName     ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS exchange      ON TABLE exchange_filing TYPE string;
+DEFINE FIELD IF NOT EXISTS filingType    ON TABLE exchange_filing TYPE string;
+
+-- Classification
+DEFINE FIELD IF NOT EXISTS sourceType    ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS isAmendment   ON TABLE exchange_filing TYPE bool;
+
+-- Temporal
+DEFINE FIELD IF NOT EXISTS filingDate       ON TABLE exchange_filing TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS periodEndDate    ON TABLE exchange_filing TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS fiscalYearEndMonth ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS reportingYear    ON TABLE exchange_filing TYPE option<int>;
+
+-- Document content (nested fields are JSON strings, see above)
+DEFINE FIELD IF NOT EXISTS documentText        ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS documentChunks      ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS documentTables      ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS documentTableCnt    ON TABLE exchange_filing TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS documentHash        ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS documentStatus      ON TABLE exchange_filing TYPE option<string>;
+
+-- Extracted data
+DEFINE FIELD IF NOT EXISTS xbrlFacts       ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS xbrlProvenance  ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS xbrlSource      ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS xbrlCurrency    ON TABLE exchange_filing TYPE option<string>;
+
+-- Enrichment
+DEFINE FIELD IF NOT EXISTS gicsCode           ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS gicsSector         ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS industryCodeRaw    ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS industryConfidence ON TABLE exchange_filing TYPE option<float>;
+
+-- Provenance
+DEFINE FIELD IF NOT EXISTS metadataSources    ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS metadataConfidence ON TABLE exchange_filing TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS language           ON TABLE exchange_filing TYPE option<string>;
+
+-- Processing
+DEFINE FIELD IF NOT EXISTS updatedAt ON TABLE exchange_filing TYPE datetime;
 ```
 
-Pre-existing `exchange_filing` records without `sourceType` should be backfilled to `"unknown"`; the field default applies to new records.
+**On `sourceType`:** the field is nullable at the database layer
+(`TYPE option<string>`). The default value `"unknown"` is applied by the
+Pydantic model `ExchangeFilingModel.sourceType` in
+`src/fin_pipeline/models/schemas.py`, not by SurrealDB. Pre-existing records
+written before this field was introduced will have `sourceType IS NONE`
+until re-ingested or backfilled.
 
-The database side is managed in:
+The database layer is managed in:
 
-- `src/fin_pipeline/db/db.py`
-- `src/fin_pipeline/db/connection.py`
-- `src/fin_pipeline/db/connection_pool.py`
-- `src/fin_pipeline/db/relations.py`
+- `src/fin_pipeline/db/db.py` — schema DDL and raw SQL helpers
+- `src/fin_pipeline/db/connection.py` — HTTP adapter, JSON serialization,
+  `merge()` for partial updates
+- `src/fin_pipeline/db/connection_pool.py` — connection pooling
+- `src/fin_pipeline/db/relations.py` — graph edges
 
-## Metadata fields (added 2025-10)
+Company graph nodes are keyed by SHA256(uppercase ticker + normalized
+company name). If the company name is unavailable, the pipeline skips
+creating a company node rather than merging by ticker alone — this preserves
+separate identities for companies that share a ticker across exchanges.
 
+## Metadata fields added in 2025-10
+
+Nine fields are populated by the metadata extraction pass:
 `periodEndDate`, `fiscalYearEndMonth`, `language`, `pageCount`,
-`industryCodeRaw`, `gicsCode`, `gicsSector`, `industryConfidence`, and
-`isAmendment` are populated by the metadata extraction pass.
-`xbrlCurrency`, `xbrlProvenance`, and `xbrlSource` are populated by the XBRL
-selection pass. All are optional; existing rows remain valid.
+`industryCodeRaw`, `gicsCode`, `gicsSector`, `industryConfidence`,
+`isAmendment`.
 
-Company graph nodes are keyed by a deterministic hash of the uppercase ticker
-and the case-folded, whitespace-normalized company name. This keeps same-ticker
-companies with different names separate. If the company name is unavailable,
-the pipeline skips creating a company node rather than merging it by ticker
-alone. Existing company nodes are assigned their key when a matching company
-is next ingested.
+Three fields are populated by the XBRL selection pass: `xbrlCurrency`,
+`xbrlProvenance`, `xbrlSource`.
+
+All twelve are optional and default to `None`. Existing rows remain valid;
+re-ingest or run `fin-pipeline enrich` to populate.
 
 ## Validation and error handling
 
-The pipeline applies a validation layer before writing to SurrealDB.
-
-Current protections include:
-
-- strict Pydantic validation via `ExchangeFilingModel`
-- stale-record cleanup before each overwrite
-- database retry and backoff logic
-- graph relation cleanup so duplicate edges are not created endlessly
-- explicit, targeted exception handling for database, HTML, PDF, and OCR failures
-- OCR page failures that do not crash the entire document process
+- Strict Pydantic validation via `ExchangeFilingModel` before any DB write
+- Stale-record cleanup (`DELETE` then `UPSERT`) before each overwrite
+- Database retry with exponential backoff (`utils/retry.py`)
+- Per-filing and per-company try/except in `sec_edgar.py` so one failure
+  does not abort the batch
+- Targeted exception handling for PDF, HTML, OCR, and database failures
+- OCR page failures isolated per-page; one bad page does not abort the
+  document
 
 ## Testing
 
-The project test suite uses `pytest` to validate ingestion logic and parser behavior without writing live records to a production database.
-
-Run the suite with:
-
 ```bash
-pytest -v
+pytest -q          # quick
+pytest -v          # verbose
+pytest --cov=fin_pipeline --cov-report=html
 ```
 
-or the shorter form:
+Test files and coverage:
 
-```bash
-pytest -q
-```
+| File | Coverage |
+|---|---|
+| `test_cli.py` | CLI flags, filing type normalization, sourceType derivation |
+| `test_crawler.py` | Directory scanning, filename metadata parsing, skip filters |
+| `test_pdf_parser.py` | PyMuPDF extraction, Camelot tables, OCR policy, page count |
+| `test_pipeline.py` | End-to-end ingestion with mocked parsers/DB, JSON round-trip, skip logic |
+| `test_sec_edgar.py` | EDGAR client, 40-F exhibit concatenation, resume pre-load |
+| `test_xbrl_bulk.py` | Concept selection, ground-truth tests for GOOG/AAPL/MSFT |
+| `test_enrichment.py` | GICS lookup priority, dry-run, industryCodeRaw preservation |
+| `test_preferred_filter.py` | Preferred-share detection, dual-class preservation |
+| `test_schema_integration.py` | Live DB round-trip (gated on `SURREAL_INTEGRATION=1`) |
 
-Current tests cover:
+Ground-truth tests in `test_xbrl_bulk.py` verify XBRL extraction against
+hardcoded expected values from actual filings (GOOG FY2023, AAPL FY2024,
+MSFT FY2024). These are the primary acceptance gate for the XBRL path —
+they detect any regression in fact selection that unit tests cannot.
 
-- crawler behavior and directory scanning
-- folder-aware local PDF metadata parsing
-- ingestion pipeline success paths
-- metadata extraction from HTML
-- PDF table extraction and OCR failure handling
-- Camelot stream fallback, empty-table filtering, and cell normalization
-- native OCR callback and `force_ocr` configuration
-- CLI metadata arguments and required-option validation
-- SEC metadata/date handling edge cases
-- SurrealDB connection helper behavior
-- database upsert and delete logic
+## Known limitations
+
+- **40-F section labels are not populated.** Form 40-F exhibit-based
+  structure does not map cleanly to Item-based section taxonomy. Content is
+  retrieved (500 KB–2 MB per filing), but chunks have `sectionLabel = None`.
+  See `docs/DESIGN_RATIONALE.md` §10.6.
+- **Camelot returns zero tables on some glossy PDFs.** Tables in SINOFERT-
+  style reports are whitespace-aligned only, with no ruled borders. Lattice
+  mode skips them; stream mode fails on mixed CJK/English. `<table>` blocks
+  exist in `documentText` but not in `documentTables`.
+- **Non-December fiscal year ends** default to `{year}-12-31` in the PDF
+  path. Japanese (March), Indian (March), Australian (June), UK (April)
+  filers will have incorrect `periodEndDate` unless the regex-based
+  cover-page extractor is enabled.
+- **Non-USD XBRL facts are rejected.** ~10–15% of SEC filings (mostly Form
+  20-F from EU and Japanese filers) have `xbrlFacts = None`.
+- **Non-English glossy reports** have `language` populated but no
+  language-appropriate keyword extraction downstream.
+- **Preferred-share tickers in the source CSV** (e.g., `GS-PD`, `C-PR`)
+  share a CIK with their plain-ticker equivalents. Analyses should join on
+  `cik`, not `companyTicker`, or apply `fin-pipeline filter-preferred`.
 
 ## Recent implementation notes
 
-This project already includes several recent improvements:
-
-- automatic metadata extraction for PDFs as well as HTML
-- PyMuPDF4LLM-based structured Markdown extraction for PDF content
-- Camelot-based table extraction with normalized headers and parsing accuracy
-- folder-aware local scanning for structured PDF paths and filenames
-- authoritative `--stock-name` support for explicit file ingestion
-- table accuracy persistence through Pydantic and SurrealDB schemas
-- retry-aware database access with exponential backoff
-- HTTP connection pooling support for SurrealDB
-- stricter exception handling in OCR and parse workflows
-- database-dependent connection tests isolate schema initialization from live SurrealDB
-- centralized shared DB ID quoting utility
-- updated logging and serialization behaviors
-- improved handling for SEC filing edge cases and partial writes
+- Metadata extraction populated for period end, fiscal year end, language,
+  page count, GICS codes
+- XBRL fact extraction switched to bulk download (companyfacts.zip +
+  quarterly FSDS) with 17 canonical concepts and four-gate selection
+  (consolidated filter, period match, instant/duration, priority order)
+- Section labeling added for 10-K and 20-F (regex-based, six canonical
+  labels)
+- Resume support added for all batch commands (`--skip-existing`,
+  `--skip-by-hash`)
+- Preferred-share filter added (`filter-preferred` CLI command)
+- Enrichment pass added (`enrich` CLI command) for GICS codes and backfills
+- `cik` field added to schema and populated end-to-end (verified against
+  AAPL/GOOG/MSFT)
+- JSON-string encoding for seven nested fields (required for arbitrary
+  filing text with SurrealDB's RecordID coercion)
+- SurrealDB body-size limits raised via env vars rather than code splitting
+  (see "System requirements")
 
 ## Support and extension points
 
-The codebase is structured to be extended in a few typical ways:
-
-- add richer PDF table classification or normalization layers
-- add semantic text chunking for narrative analysis
-- add more robust SEC company metadata enrichment
-- extend graph relations beyond company filing references
+- Add richer table classification for glossy PDFs (parse `<table>` blocks
+  from `documentText` when Camelot returns zero rows)
+- Add language-specific keyword lists for non-English AI signal extraction
+- Add LLM-based section labeling for 40-F (content-based classifier rather
+  than keyword matching)
+- Add segment-aware XBRL extraction (requires dimensional parsing; enables
+  `segmentRevenue` re-add)
+- Add FX conversion for non-USD XBRL facts
+- Extend graph relations beyond company-filing edges
 
 ## Summary
 
-`fin_pipeline` provides a practical ingestion pipeline for financial document processing with a current focus on:
+`fin_pipeline` provides a production-oriented ingestion pipeline for
+financial document processing focused on:
 
-- local and SEC filing ingestion
-- document text and table extraction
-- metadata normalization across PDF and HTML formats
-- SurrealDB persistence and company graph relationships
-- production-oriented operational safeguards
+- SEC filings (10-K, 20-F, 40-F) and local PDF reports
+- Structured text, table, and XBRL extraction
+- Page-level chunking with section labels for narrative analysis
+- Metadata normalization with source and confidence tracking
+- Resumable batch ingestion across thousands of documents
+- SurrealDB persistence with graph relationships
+- Post-ingestion enrichment for GICS classification and derived fields
